@@ -57,7 +57,7 @@ You need a free Cloudflare account and a Five9 user with API access — **create
 
 **1 — Deploy to Cloudflare** *(one click, in your browser)*
 
-[![Deploy to Cloudflare](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/ryanshatz/five9-mcp)
+[![Deploy to Cloudflare](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/outboundani/five9-mcp)
 
 Sign in to Cloudflare and click through — it creates your own copy of this Worker (plus the KV namespace it needs) and gives you a URL like `https://five9-mcp.you.workers.dev`.
 
@@ -75,7 +75,7 @@ Open **`/setup`** on your new server. Enter your Five9 username, password, and r
 <summary><strong>⌨️ Prefer the CLI?</strong></summary>
 
 ```sh
-git clone https://github.com/ryanshatz/five9-mcp
+git clone https://github.com/outboundani/five9-mcp
 cd five9-mcp
 npx wrangler deploy   # provisions the CONFIG KV namespace on first deploy
 ```

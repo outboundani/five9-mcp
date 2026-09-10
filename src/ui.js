@@ -104,7 +104,7 @@ export function landingPage(tools, cfg = { configured: true }) {
   <header><nav class="nav">
     <a class="logo" href="/">five9-<span>mcp</span></a><span class="sp"></span>
     <a href="#setup">Setup</a><a href="#connect">Connect</a><a href="#tools">Tools</a>
-    <a href="/console">Console</a><a href="https://github.com/ryanshatz/five9-mcp">GitHub</a>
+    <a href="/console">Console</a><a href="https://github.com/outboundani/five9-mcp">GitHub</a>
   </nav></header>
   <main>
   <div class="hero">
@@ -121,7 +121,7 @@ export function landingPage(tools, cfg = { configured: true }) {
       ${cfg.configured
         ? '<a class="btn primary" href="/console">▶ Open the console</a>'
         : '<a class="btn primary" href="/setup">⚙️ Finish setup — connect your Five9 domain</a>'}
-      <a class="btn" href="https://github.com/ryanshatz/five9-mcp">★ Star on GitHub</a>
+      <a class="btn" href="https://github.com/outboundani/five9-mcp">★ Star on GitHub</a>
     </div>
     ${cfg.configured ? '' : `<p style="margin-top:1rem"><span class="pill">👋 This server isn't connected to a Five9 domain yet — <a href="/setup">finish setup</a> (takes 1 minute, no terminal needed)</span></p>`}
   </div>
@@ -130,7 +130,7 @@ export function landingPage(tools, cfg = { configured: true }) {
   <p class="sub">Runs on Cloudflare's free tier. You need a free Cloudflare account and a Five9 user with API access. <strong>No terminal required.</strong></p>
   <div class="steps">
     <div class="step"><span class="n">1</span><h3>Deploy to Cloudflare</h3>
-      <p><a href="https://deploy.workers.cloudflare.com/?url=https://github.com/ryanshatz/five9-mcp"><img src="https://deploy.workers.cloudflare.com/button" alt="Deploy to Cloudflare" style="max-width:100%"></a></p>
+      <p><a href="https://deploy.workers.cloudflare.com/?url=https://github.com/outboundani/five9-mcp"><img src="https://deploy.workers.cloudflare.com/button" alt="Deploy to Cloudflare" style="max-width:100%"></a></p>
       <p>Click the button, sign in to Cloudflare, and it deploys your own copy in your browser. You get a URL like <code>https://five9-mcp.you.workers.dev</code>.</p>
       <p><small>Prefer the CLI? <code>git clone</code> the repo and <code>npx wrangler deploy</code> works too.</small></p></div>
     <div class="step"><span class="n">2</span><h3>Run the setup wizard</h3>
@@ -188,7 +188,7 @@ export function landingPage(tools, cfg = { configured: true }) {
   <p class="sub"><span class="badge read">READ</span> tools are always safe; <span class="badge write">WRITE</span> tools change your domain — the server tells AIs to confirm those with you first. Try any of them in the <a href="/console">console</a>.</p>
   ${toolCards}
   </main>
-  <footer>MIT-licensed open source · <a href="https://github.com/ryanshatz/five9-mcp">github.com/ryanshatz/five9-mcp</a> · built by <a href="https://www.linkedin.com/in/ryanshatzkamer">Ryan Shatzkamer</a></footer>
+  <footer>MIT-licensed open source · <a href="https://github.com/outboundani/five9-mcp">github.com/outboundani/five9-mcp</a> · built by <a href="https://www.linkedin.com/in/ryanshatzkamer">Ryan Shatzkamer</a></footer>
   <script>
   document.querySelectorAll('[data-copy]').forEach(function(b){
     b.addEventListener('click', function(){
