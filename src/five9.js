@@ -79,6 +79,10 @@ export function toArray(v) {
 
 export class Five9Error extends Error {}
 
+// SOAP operations allowed in read-only mode. setSessionParameters only scopes
+// the supervisor stats session; it changes no configuration.
+const READ_ONLY_METHOD = /^(get\w*|is\w*|checkDncForNumbers|runReport|setSessionParameters)$/;
+
 // ---- Generic ordered XML serialization ----
 //
 // Five9's JAXB endpoints validate child-element order against the WSDL
@@ -175,9 +179,15 @@ export class Five9Client {
     this.host = cfg.host || 'api.five9.com';
     this.adminVersion = cfg.adminVersion || 'v13';
     this.supervisorVersion = cfg.supervisorVersion || 'v13';
+    this.readOnly = Boolean(cfg.readOnly);
   }
 
   async soap(service, method, innerXml = '') {
+    // Second line of defense behind the tool-level block: in read-only mode
+    // only read operations reach Five9, whatever tool asked for them.
+    if (this.readOnly && !READ_ONLY_METHOD.test(method)) {
+      throw new Five9Error(`${method} is blocked: this server is in read-only mode (FIVE9_READ_ONLY).`);
+    }
     const isAdmin = service === 'admin';
     const url = isAdmin
       ? `https://${this.host}/wsadmin/${this.adminVersion}/AdminWebService`

@@ -24,6 +24,9 @@ export async function loadConfig(env) {
     restDomainId: env.FIVE9_DOMAIN_ID || stored?.restDomainId || '',
     restRegion: env.FIVE9_REST_REGION || stored?.restRegion || 'US',
     restBaseUrl: env.FIVE9_REST_BASE_URL || stored?.restBaseUrl || '',
+    // FIVE9_READ_ONLY=true hides and refuses every write tool, and the SOAP
+    // client refuses any non-read operation. For audits on production domains.
+    readOnly: /^(1|true|yes)$/i.test(String(env.FIVE9_READ_ONLY || '').trim()),
     source: envManaged ? 'env' : (stored ? 'kv' : 'none'),
     hasKv: Boolean(env.CONFIG),
     // TTS for generate_prompt_audio. Default is the Workers AI binding (no

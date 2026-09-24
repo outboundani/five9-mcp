@@ -1,7 +1,7 @@
 // MCP tool definitions + dispatch. Each tool maps to one or two Five9 SOAP
 // calls and returns plain JSON for the model.
 
-import { Five9Client } from './five9.js';
+import { Five9Client, Five9Error } from './five9.js';
 import { Five9RestClient } from './five9rest.js';
 import { ABOUT } from './about.js';
 import { validateFlow, collectFlowRefs, composeIvrXml, flowToMermaid, scriptXmlToMermaid, IVR_NODE_TYPES } from './ivr.js';
@@ -1229,13 +1229,18 @@ export const WRITE_TOOLS = new Set([
   'manage_circle', 'rest_call', 'build_ivr_script', 'generate_prompt_audio',
 ]);
 
-export function toolDefs() {
-  return TOOLS.map(({ name, description, inputSchema }) => ({ name, description, inputSchema }));
+export function toolDefs(cfg) {
+  return TOOLS
+    .filter((t) => !(cfg?.readOnly && WRITE_TOOLS.has(t.name)))
+    .map(({ name, description, inputSchema }) => ({ name, description, inputSchema }));
 }
 
 export async function callTool(cfg, name, args) {
   const tool = TOOLS.find((t) => t.name === name);
   if (!tool) throw new Error(`Unknown tool: ${name}`);
+  if (cfg?.readOnly && WRITE_TOOLS.has(name)) {
+    throw new Five9Error(`${name} is disabled: this server is in read-only mode (FIVE9_READ_ONLY).`);
+  }
   if (tool.rest) return tool.handler(new Five9RestClient(cfg), args || {}, cfg);
   const f9 = tool.five9 === false ? null : new Five9Client(cfg);
   return tool.handler(f9, args || {}, cfg);

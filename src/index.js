@@ -135,7 +135,7 @@ async function handleMessage(msg, env) {
       case 'ping':
         return rpcResult(id, {});
       case 'tools/list':
-        return rpcResult(id, { tools: toolDefs() });
+        return rpcResult(id, { tools: toolDefs(env) });
       case 'tools/call': {
         const name = params?.name;
         try {
