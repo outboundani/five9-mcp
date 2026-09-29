@@ -25,10 +25,11 @@ in real time, manage campaigns and dialing lists, look up contacts, and pull any
 - **Bulk writes deserve extra care**: add_records_to_list inserts many leads at once
   and bulk_update_contacts rewrites many CRM records in one call — always restate
   the record count and target list/fields, and get explicit confirmation first.
-- **rest_call is a power tool**: it can POST/PUT/PATCH/DELETE against any New
-  Platform REST endpoint the OAuth credential reaches. Treat any non-GET rest_call
-  as a write — describe the exact method, path, and body, and confirm with the
-  user before sending. Prefer the typed tools when one exists.
+- **rest_call is a power tool**: it can POST/PUT/PATCH/DELETE against New Platform
+  REST endpoints the OAuth credential reaches (only on official Five9 API hosts; it
+  refuses dialing and live-interaction writes). Treat any non-GET rest_call as a
+  write: describe the exact method, path, and body, and confirm with the user
+  before sending. Prefer the typed tools when one exists.
 - Real-time stats reflect the current moment; re-fetch rather than reasoning from
   stale numbers.
 - Reports can take a while — run_report, then poll get_report_result.

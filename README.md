@@ -318,7 +318,7 @@ These tools speak Five9's modern **OAuth 2.0 "New Platform" REST APIs**, not the
 | | Tool | What it does |
 |--|------|--------------|
 | 🟢 | `rest_check_connection` | Verify the OAuth credential — acquires a bearer token (no domain data) |
-| 🟢✏️ | `rest_call` | Generic authenticated call to any New Platform endpoint (method + path + body), with rate-limit/backoff and ETag support |
+| 🟢✏️ | `rest_call` | Generic authenticated call to a New Platform endpoint (method + path + body), with rate-limit/backoff and ETag support. Guarded: token pinned to official Five9 API hosts, validated paths, no dialing or live-interaction writes, secrets redacted |
 | 🟢✏️ | `manage_circle` | Circles — list / get / create / delete (no SOAP equivalent) |
 | 🟢 | `list_np_prompts` | Voice prompts via the New Platform prompts API (paginated) |
 | 🟢 | `list_interaction_dispositions` | Dispositions via the interactions API (richer than the SOAP list; read-only) |
@@ -394,6 +394,7 @@ Requests are stateless: every MCP call opens a fresh Five9 SOAP exchange with HT
 - **Always complete setup (or set `MCP_AUTH_TOKEN`).** An unconfigured server with no access key runs open — anyone who finds the URL can drive your contact center.
 - Write tools (✏️ above) change your domain. Scope the Five9 API user's role to what you actually want an AI to do — Five9 permissions are the real security boundary.
 - `manage_dnc remove` and `delete_list` deserve extra caution; the `about` instructions tell AIs to confirm before using them.
+- `rest_call` is guarded in code (`src/rest-rules.js`), not just by instructions: the OAuth bearer token is only ever sent over https to an official regional Five9 API host (or your configured `FIVE9_REST_BASE_URL`), redirects are not followed, paths may not use percent-encoding or `.`/`..` segments, `credential` must be one you configured, non-GET calls to campaign, call, dialing, session, or live-interaction endpoints are refused, and secret-looking fields (passwords, secrets, tokens, API keys, credentials) are redacted from responses.
 - The console stores your access key in your browser's localStorage only, and calls go same-origin to your own Worker.
 
 ## 💻 Development

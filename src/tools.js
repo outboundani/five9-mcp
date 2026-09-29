@@ -2,7 +2,8 @@
 // calls and returns plain JSON for the model.
 
 import { Five9Client, Five9Error } from './five9.js';
-import { Five9RestClient } from './five9rest.js';
+import { Five9RestClient, Five9RestError } from './five9rest.js';
+import { restCallRefusal, redactSecrets } from './rest-rules.js';
 import { ABOUT } from './about.js';
 import { validateFlow, collectFlowRefs, composeIvrXml, flowToMermaid, scriptXmlToMermaid, IVR_NODE_TYPES } from './ivr.js';
 import { synthesizeUlawWav } from './tts.js';
@@ -948,7 +949,7 @@ export const TOOLS = [
   },
   {
     name: 'rest_call',
-    description: 'Make an authenticated call to any Five9 New Platform REST API endpoint (OAuth bearer token handled automatically, with rate-limit/backoff and ETag/If-Match concurrency support). Use this to explore endpoints before typed tools exist. path is relative to the base URL, e.g. "/interactions/v1/domains/{domainId}/dispositions" ({domainId} is substituted from config). credential picks which API-family credential to use (default "default"; e.g. "data-tables"). base_url overrides the host for services on a different base. For writes, pass if_match with the ETag from a prior read.',
+    description: 'Make an authenticated call to any Five9 New Platform REST API endpoint (OAuth bearer token handled automatically, with rate-limit/backoff and ETag/If-Match concurrency support). Use this to explore endpoints before typed tools exist. path must start with "/", e.g. "/interactions/v1/domains/{domainId}/dispositions" ({domainId} is substituted from config); segments use letters, digits, and . _ ~ : - only (no percent-encoding, no "." or ".."), and query parameters go in query. credential must be a configured credential name (default "default"; e.g. "data-tables"). base_url may only name an official regional Five9 API host (e.g. https://api.prod.eu.five9.net); the token is never sent anywhere else. Non-GET calls touching campaigns, calls, dialing, sessions, or live interactions are refused (use control_campaign). Secret-looking fields in responses are redacted. For writes, pass if_match with the ETag from a prior read.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -958,13 +959,20 @@ export const TOOLS = [
         body: { type: 'object', description: 'JSON request body (for POST/PUT/PATCH)', additionalProperties: true },
         if_match: { type: 'string', description: 'ETag value for optimistic-concurrency writes (sent as If-Match)' },
         credential: { type: 'string', description: 'Named credential / API family to use (default "default"; e.g. "data-tables")' },
-        base_url: { type: 'string', description: 'Override the host base URL (for services hosted on a different base than the default)' },
+        base_url: { type: 'string', description: 'Official regional Five9 API origin to use instead of the configured one, e.g. "https://api.prod.eu.five9.net". Any other host is refused.' },
       },
       required: ['path'],
       additionalProperties: false,
     },
     rest: true,
-    handler: (r, a) => r.request(a.method || 'GET', a.path, { query: a.query, body: a.body, ifMatch: a.if_match, credential: a.credential || 'default', baseUrl: a.base_url }),
+    handler: async (r, a) => {
+      const method = String(a.method || 'GET').toUpperCase();
+      const credential = a.credential || 'default';
+      const refusal = restCallRefusal({ method, path: a.path, query: a.query, body: a.body, credential, credentials: r.credentialNames() });
+      if (refusal) throw new Five9RestError(refusal);
+      const res = await r.request(method, a.path, { query: a.query, body: a.body, ifMatch: a.if_match, credential, baseUrl: a.base_url });
+      return { ...res, data: redactSecrets(res.data) };
+    },
   },
   {
     name: 'manage_circle',

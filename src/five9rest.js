@@ -18,42 +18,18 @@
 //   Concurrency: ETag on reads, If-Match on writes -> 412 Precondition Failed.
 
 import { Five9Error } from './five9.js';
+import { REGION_BASE_URLS, REST_METHODS, resolveRestBase, pathRefusal, queryRefusal } from './rest-rules.js';
 
 // A REST error that the MCP layer surfaces gracefully (extends Five9Error so
 // index.js's `e instanceof Five9Error` catch turns it into an isError result).
 export class Five9RestError extends Five9Error {}
 
-// Region -> API base URL. See "Getting Started with Five9 New Platform APIs".
-export const REGION_BASE_URLS = {
-  US: 'https://api.prod.us.five9.net',
-  'US-ALPHA': 'https://api.alpha.us.five9.net',
-  CA: 'https://api.prod.ca.five9.net',
-  EU: 'https://api.prod.eu.five9.net',
-  IN: 'https://api.prod.in.five9.net',
-  UK: 'https://api.prod.uk.five9.net',
-};
+// Host, path, and query rules live in rest-rules.js (pure, unit tested).
+export { REGION_BASE_URLS };
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 // Backoff schedule for 429/5xx retries: 1s, 2s, 4s, 8s, 8s…
 const backoffMs = (attempt) => [1000, 2000, 4000, 8000][Math.min(attempt, 3)];
-
-// Only ever send the bearer token to Five9's own hosts. `base_url` is a
-// caller-supplied override (and rest_call is reachable by the connected AI),
-// so an unrestricted host would let a prompt-injected call exfiltrate a live
-// Five9 access token to an attacker-controlled server. Allow https to
-// *.five9.net / *.five9.com only.
-export function assertFive9Host(base) {
-  let host;
-  try { host = new URL(base).hostname.toLowerCase(); } catch {
-    throw new Five9RestError(`Invalid base URL: ${base}`);
-  }
-  if (!/^https:/i.test(base)) {
-    throw new Five9RestError(`Refusing to send a Five9 token over non-HTTPS URL: ${base}`);
-  }
-  if (host !== 'five9.net' && host !== 'five9.com' && !host.endsWith('.five9.net') && !host.endsWith('.five9.com')) {
-    throw new Five9RestError(`Refusing to send a Five9 token to non-Five9 host "${host}". base_url must be a *.five9.net / *.five9.com endpoint.`);
-  }
-}
 
 export class Five9RestClient {
   // cfg: { restCredentials: { <name>: {key, secret} }, restConsumerKey,
@@ -68,6 +44,7 @@ export class Five9RestClient {
     this.domainId = cfg?.restDomainId || '';
     this.region = (cfg?.restRegion || 'US').toUpperCase();
     this.baseUrl = (cfg?.restBaseUrl || REGION_BASE_URLS[this.region] || REGION_BASE_URLS.US).replace(/\/+$/, '');
+    this.readOnly = Boolean(cfg?.readOnly);
     this.maxRetries = 5;
     this._tokens = {}; // credentialName -> { token, expiry }
   }
@@ -75,7 +52,7 @@ export class Five9RestClient {
   // OAuth 2.0 client-credentials grant for a named credential (default
   // 'default'). Cached per credential until ~30s before expiry.
   async getToken(credentialName = 'default') {
-    const cred = this.credentials[credentialName];
+    const cred = Object.hasOwn(this.credentials, credentialName) ? this.credentials[credentialName] : null;
     if (!cred?.key || !cred?.secret) {
       throw new Five9RestError(
         credentialName === 'default'
@@ -85,8 +62,9 @@ export class Five9RestClient {
     }
     const cached = this._tokens[credentialName];
     if (cached && Date.now() < cached.expiry) return cached.token;
-    const res = await fetch(`${this.baseUrl}/oauth2/v1/token`, {
+    const res = await fetch(`${this._origin()}/oauth2/v1/token`, {
       method: 'POST',
+      redirect: 'manual',
       headers: {
         Authorization: 'Basic ' + btoa(`${cred.key}:${cred.secret}`),
         'Content-Type': 'application/x-www-form-urlencoded',
@@ -113,6 +91,15 @@ export class Five9RestClient {
   // Which credential names are configured.
   credentialNames() { return Object.keys(this.credentials).filter((n) => this.credentials[n]?.key); }
 
+  // The https origin the token may be sent to. rest_call's base_url may only
+  // name an official regional Five9 API host (or the configured one); a
+  // prompt-injected base_url must never receive a live bearer token.
+  _origin(requested) {
+    const { origin, error } = resolveRestBase(requested, this.baseUrl);
+    if (error) throw new Five9RestError(error);
+    return origin;
+  }
+
   // Substitute path placeholders and normalize to a leading slash.
   _resolvePath(path) {
     let p = String(path || '');
@@ -124,10 +111,21 @@ export class Five9RestClient {
   // Authenticated REST call with rate-limit / retry handling. Returns
   // { status, etag, data } where data is parsed JSON (or text, or null).
   async request(method, path, { query, body, ifMatch, headers, credential = 'default', baseUrl } = {}) {
-    const base = (baseUrl || this.baseUrl).replace(/\/+$/, '');
-    assertFive9Host(base); // fail before any token is fetched or sent
+    // Every check runs before any token is fetched or sent.
+    const m = String(method || 'GET').toUpperCase();
+    if (!REST_METHODS.includes(m)) throw new Five9RestError(`HTTP method ${m} is not allowed.`);
+    if (this.readOnly && m !== 'GET') {
+      throw new Five9RestError(`${m} ${path} is blocked: this server is in read-only mode (FIVE9_READ_ONLY).`);
+    }
+    const base = this._origin(baseUrl);
+    if (String(path || '').includes('{domainId}') && !this.domainId) {
+      throw new Five9RestError('FIVE9_DOMAIN_ID is not configured, so {domainId} cannot be filled in.');
+    }
+    const resolved = this._resolvePath(path);
+    const refusal = pathRefusal(resolved, { encoded: true }) || queryRefusal(query);
+    if (refusal) throw new Five9RestError(refusal);
     const token = await this.getToken(credential);
-    let url = base + this._resolvePath(path);
+    let url = base + resolved;
     if (query && Object.keys(query).length) {
       const qs = new URLSearchParams(query).toString();
       if (qs) url += (url.includes('?') ? '&' : '?') + qs;
@@ -141,7 +139,8 @@ export class Five9RestClient {
     if (ifMatch) h['If-Match'] = ifMatch;
 
     for (let attempt = 0; ; attempt++) {
-      const res = await fetch(url, { method: (method || 'GET').toUpperCase(), headers: h, body: payload });
+      // No redirects: a 3xx must not carry the bearer token to another host.
+      const res = await fetch(url, { method: m, headers: h, body: payload, redirect: 'manual' });
       // 429: honor Retry-After (seconds) if present, else backoff.
       if (res.status === 429 && attempt < this.maxRetries) {
         const ra = Number(res.headers.get('Retry-After'));
@@ -153,7 +152,7 @@ export class Five9RestClient {
         await sleep(backoffMs(attempt));
         continue;
       }
-      return this._parse(res, method, url);
+      return this._parse(res, m, url);
     }
   }
 
