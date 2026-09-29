@@ -56,13 +56,16 @@ function json(data, status = 200) {
 // True if the request may use the MCP endpoint. `accessKey` is the server's
 // configured access key (from env or KV — see config.js).
 export async function checkAuth(request, accessKey) {
-  if (!accessKey) return true; // auth not configured — open server
+  if (!accessKey) return 'full'; // auth not configured — open server
   const header = request.headers.get('Authorization') || '';
   if (!header.startsWith('Bearer ')) return false;
   const presented = header.slice(7).trim();
-  if (presented === accessKey) return true; // raw access key still works
+  if (presented === accessKey) return 'full'; // raw access key still works
   const payload = await read(accessKey, presented);
-  return payload?.t === 'a';
+  // Returns the token's authorized scope so callers can enforce it (e.g. deny
+  // destructive tools to a read-only-scoped token) instead of just checking
+  // that some valid token was presented.
+  return payload?.t === 'a' ? (payload.scope || 'full') : false;
 }
 
 export function unauthorized(origin) {

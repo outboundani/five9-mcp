@@ -47,16 +47,21 @@ async function route(request, env) {
       if (request.method !== 'POST') {
         return json({ error: 'MCP requests must be POSTed to /mcp' }, 405);
       }
-      if (!(await checkAuth(request, cfg.authToken))) return unauthorized(url.origin);
+      const scope = await checkAuth(request, cfg.authToken);
+      if (!scope) return unauthorized(url.origin);
+      // Authorization, not just authentication: a read-scoped token is
+      // treated as read-only for this request, reusing the same WRITE_TOOLS
+      // gate that normally guards FIVE9_READ_ONLY-configured servers.
+      const reqCfg = scope === 'read' ? { ...cfg, readOnly: true } : cfg;
       let body;
       try { body = await request.json(); } catch {
         return json(rpcError(null, -32700, 'Parse error: body must be JSON'), 400);
       }
       if (Array.isArray(body)) {
-        const results = (await Promise.all(body.map((m) => handleMessage(m, cfg)))).filter(Boolean);
+        const results = (await Promise.all(body.map((m) => handleMessage(m, reqCfg)))).filter(Boolean);
         return results.length ? json(results) : new Response(null, { status: 202 });
       }
-      const result = await handleMessage(body, cfg);
+      const result = await handleMessage(body, reqCfg);
       return result ? json(result) : new Response(null, { status: 202 });
     }
 
