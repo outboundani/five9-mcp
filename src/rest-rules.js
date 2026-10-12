@@ -169,7 +169,10 @@ const URL_USERINFO = /(:\/\/)[^\s/:@"'<]+:[^\s/@"'<]+@/g;
 // IVR scripts). Every text node inside the <value> element is replaced.
 const PAIR_SIBLING = /<((?:[A-Za-z_][\w.-]*:)?(?:key|name|paramName|headerName|parameterName|variableName))(\s[^>]*)?>([^<]*)<\/\1>(\s*)<((?:[A-Za-z_][\w.-]*:)?value)(\s[^>]*)?>([\s\S]*?)<\/\5>/gi;
 const SECRET_HEADER = /^x-.*(key|token|secret|auth)|^authorization$|^cookie$/i;
-const isSecretLabel = (label) => SECRET_NAME.test(label) || SECRET_HEADER.test(label.trim());
+// API gateway and vendor key names: X-Api-Key style suffixes, subscription keys, client secrets.
+const SECRET_SUFFIX = /(^|[-_ .])(key|apikey|subscription[-_]?key|client[-_]?secret|private[-_]?token)$/i;
+const SECRET_VENDOR = /ocp-apim|functions-key/i;
+const isSecretLabel = (label) => SECRET_NAME.test(label) || SECRET_HEADER.test(label.trim()) || SECRET_SUFFIX.test(label.trim()) || SECRET_VENDOR.test(label);
 
 export function redactText(text) {
   return String(text)
@@ -192,7 +195,8 @@ export function redactResult(value, depth = 0) {
   const pairName = typeof value.key === 'string' ? value.key : typeof value.name === 'string' ? value.name : null;
   const out = {};
   for (const [k, v] of Object.entries(redactSecrets(value))) {
-    out[k] = k === 'value' && pairName && SECRET_NAME.test(pairName) && v !== null && v !== '' ? REDACTED : redactResult(v, depth + 1);
+    // Web connector constants are { key, value } objects: the same header rules as the XML text path.
+    out[k] = k === 'value' && pairName && isSecretLabel(pairName) && v !== null && v !== '' ? REDACTED : redactResult(v, depth + 1);
   }
   return out;
 }
