@@ -240,3 +240,35 @@ test('get_ivr_script and list_web_connectors scrub embedded secrets', async () =
     assert.ok(text.includes('x=1'));
   });
 });
+
+// ---------- 6. CSV row injection through line breaks in record values ----------
+
+const CR = String.fromCharCode(13);
+const LF = String.fromCharCode(10);
+
+test('a line break in a lead or contact value can never add CSV rows', async () => {
+  const hundreds = Array.from({ length: 300 }, (_, i) => `555${String(i).padStart(7, '0')}`).join(CR);
+  const cases = [];
+  for (const c of [CR, LF, CR + LF, String.fromCharCode(0), String.fromCharCode(0x2028), String.fromCharCode(0x85)]) {
+    cases.push(['add_record_to_list', { list_name: 'Cold', fields: { number1: '5550000001', first_name: `A${c}5550000002${c}5550000003` } }]);
+    cases.push(['add_record_to_list', { list_name: 'Cold', fields: { number1: '5550000001', [`first${c}name`]: 'A' } }]);
+    cases.push(['add_records_to_list', { list_name: 'Cold', records: [{ number1: `5550000001${c}5550000002` }] }]);
+    cases.push(['bulk_update_contacts', { records: [{ number1: '5550000001', notes: `x${c}5550000002,y` }], key_fields: ['number1'] }]);
+    cases.push(['delete_contact', { criteria: { number1: `5550000001${c}5550000002` } }]);
+  }
+  cases.push(['add_record_to_list', { list_name: 'Cold', fields: { number1: '5550000001', first_name: hundreds } }]);
+  for (const [tool, args] of cases) {
+    await withFive9({}, async (calls) => {
+      await assert.rejects(() => callTool(cfg, tool, args), /line breaks or control characters/, tool);
+      assert.deepEqual(calls.map((c) => c.soap), [], `${tool} sent something`);
+    });
+  }
+  // Commas and quotes are quoted; one record is exactly one CSV line.
+  await withFive9({ addToListCsv: env('addToListCsv', '<return><identifier>i1</identifier></return>') }, async (calls) => {
+    const out = await callTool(cfg, 'add_records_to_list', { list_name: 'Cold', records: [{ number1: '5550000001', first_name: 'Doe, "Jr"' }, { number1: '5550000002' }] });
+    const raw = /<csvData>([\s\S]*?)<\/csvData>/.exec(calls.find((c) => c.soap === 'addToListCsv').body)[1]
+      .replace(/&quot;/g, '"').replace(/&amp;/g, '&');
+    assert.deepEqual(raw.split(LF), ['5550000001,"Doe, ""Jr"""', '5550000002,']);
+    assert.equal(out.recordCount, 2);
+  });
+});

@@ -7,6 +7,33 @@ const NS = {
   supervisor: 'http://service.supervisor.ws.five9.com/',
 };
 
+// CSV cells for list and CRM imports (addToListCsv, updateContactsCsv,
+// deleteFromContactsCsv). A line break inside a value starts a new CSV row on
+// Five9's side, so one "record" could carry hundreds: a bare CR survives
+// escapeXml and every XML parser turns it into LF before Five9's CSV reader
+// sees it. Values and field names with CR, LF or any other control character
+// (including NEL and the Unicode line and paragraph separators) are refused;
+// the separator and quotes are quoted per RFC 4180. One record is always
+// exactly one CSV line.
+const CSV_FORBIDDEN = /[\x00-\x08\x0a-\x1f\x7f\u0085\u2028\u2029]/;
+
+export function csvCell(v) {
+  if (v !== null && v !== undefined && typeof v === 'object') throw new Five9Error('Record values must be plain text. Nothing was sent to Five9.');
+  const s = String(v ?? '');
+  if (CSV_FORBIDDEN.test(s)) throw new Five9Error('Record values cannot contain line breaks or control characters. Nothing was sent to Five9.');
+  return /[",]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
+}
+
+export function buildCsv(rows, names) {
+  for (const n of names) {
+    if (typeof n !== 'string' || !n || CSV_FORBIDDEN.test(n)) throw new Five9Error('Field names cannot be empty or contain line breaks or control characters. Nothing was sent to Five9.');
+  }
+  const lines = rows.map((rec) => names.map((n) => csvCell(rec[n])).join(','));
+  const csv = lines.join('\n');
+  if (csv.split('\n').length !== rows.length) throw new Five9Error('CSV row count does not match the records. Nothing was sent to Five9.');
+  return csv;
+}
+
 export function escapeXml(v) {
   return String(v ?? '')
     .replace(/&/g, '&amp;')
@@ -352,10 +379,7 @@ export class Five9Client {
     const mappings = names.map((n, i) =>
       `<fieldsMapping><columnNumber>${i + 1}</columnNumber><fieldName>${escapeXml(n)}</fieldName>` +
       `<key>${n === key}</key></fieldsMapping>`).join('');
-    const csv = rows.map((rec) => names.map((n) => {
-      const v = String(rec[n] ?? '');
-      return /[",\n]/.test(v) ? `"${v.replace(/"/g, '""')}"` : v;
-    }).join(',')).join('\n');
+    const csv = buildCsv(rows, names);
     const crmAddMode = opts.crmAddMode || 'ADD_NEW';
     const crmUpdateMode = opts.crmUpdateMode || 'UPDATE_FIRST';
     const listAddMode = opts.listAddMode || 'ADD_FIRST';
@@ -394,10 +418,7 @@ export class Five9Client {
     const mappings = names.map((n, i) =>
       `<fieldsMapping><columnNumber>${i + 1}</columnNumber><fieldName>${escapeXml(n)}</fieldName>` +
       `<key>${keys.includes(n)}</key></fieldsMapping>`).join('');
-    const csv = rows.map((rec) => names.map((n) => {
-      const v = String(rec[n] ?? '');
-      return /[",\n]/.test(v) ? `"${v.replace(/"/g, '""')}"` : v;
-    }).join(',')).join('\n');
+    const csv = buildCsv(rows, names);
     const crmAddMode = opts.crmAddMode || 'DONT_ADD';
     const crmUpdateMode = opts.crmUpdateMode || 'UPDATE_FIRST';
     // crmUpdateSettings order: basicImportSettings (fieldsMapping, separator,
@@ -900,10 +921,7 @@ export class Five9Client {
     if (!names.length) throw new Five9Error('criteria must contain at least one field (e.g. {"number1": "5551234567"}).');
     const mappings = names.map((n, i) =>
       `<fieldsMapping><columnNumber>${i + 1}</columnNumber><fieldName>${escapeXml(n)}</fieldName><key>true</key></fieldsMapping>`).join('');
-    const csvLine = names.map((n) => {
-      const v = String(criteria[n] ?? '');
-      return /[",\n]/.test(v) ? `"${v.replace(/"/g, '""')}"` : v;
-    }).join(',');
+    const csvLine = buildCsv([criteria], names);
     const r = await this.admin('deleteFromContactsCsv',
       `<crmDeleteSettings>${mappings}<skipHeaderLine>false</skipHeaderLine>` +
       `<crmDeleteMode>DELETE_SOLE_MATCHES</crmDeleteMode></crmDeleteSettings>` +
