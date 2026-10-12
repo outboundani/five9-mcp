@@ -164,8 +164,20 @@ const XML_SECRET_ATTR = new RegExp(`(\\b[\\w.-]*(?:${SECRET_WORD})[\\w.-]*\\s*=\
 const URL_SECRET_PARAM = new RegExp(`([?&;][\\w.-]*(?:${SECRET_WORD}|key|sig)[\\w.-]*=)([^&#\\s"'<]+)`, 'gi');
 const URL_USERINFO = /(:\/\/)[^\s/:@"'<]+:[^\s/@"'<]+@/g;
 
+// <key>Authorization</key><value>Basic ...</value>, <name>X-Api-Key</name><value>...</value>:
+// a secret NAMED by a sibling element (web service headers and parameters in
+// IVR scripts). Every text node inside the <value> element is replaced.
+const PAIR_SIBLING = /<((?:[A-Za-z_][\w.-]*:)?(?:key|name|paramName|headerName|parameterName|variableName))(\s[^>]*)?>([^<]*)<\/\1>(\s*)<((?:[A-Za-z_][\w.-]*:)?value)(\s[^>]*)?>([\s\S]*?)<\/\5>/gi;
+const SECRET_HEADER = /^x-.*(key|token|secret|auth)|^authorization$|^cookie$/i;
+const isSecretLabel = (label) => SECRET_NAME.test(label) || SECRET_HEADER.test(label.trim());
+
 export function redactText(text) {
   return String(text)
+    .replace(PAIR_SIBLING, (m, kTag, kAttrs = '', label, gap, vTag, vAttrs = '', inner) => (isSecretLabel(label)
+      ? `<${kTag}${kAttrs}>${label}</${kTag}>${gap}<${vTag}${vAttrs}>${inner.replace(/>([^<]+)</g, `>${REDACTED}<`).replace(/^[^<]+/, REDACTED).replace(/[^>]+$/, REDACTED)}</${vTag}>`
+      : m))
+    // Basic and Bearer credentials anywhere in the text
+    .replace(/\b(Basic|Bearer)\s+[A-Za-z0-9+/=._~-]{8,}/g, `$1 ${REDACTED}`)
     .replace(XML_SECRET_ELEMENT, (m, tag, attrs = '') => `<${tag}${attrs}>${REDACTED}</${tag}>`)
     .replace(XML_SECRET_ATTR, (m, k, v) => `${k}${v[0]}${REDACTED}${v[0]}`)
     .replace(URL_SECRET_PARAM, `$1${REDACTED}`)

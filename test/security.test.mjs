@@ -291,3 +291,14 @@ test('a writable field given as a list is refused (no repeated elements)', async
     assert.deepEqual(calls.map((c) => c.soap), []);
   });
 });
+
+test('get_ivr_script scrubs secrets named by a sibling key or name element', async () => {
+  const xml = '<module><headers><entry><key>Authorization</key><value>Basic dXNlcjpzM2NyZXQ=</value></entry><entry><key>X-Api-Key</key><value>K-12345-abc</value></entry><entry><key>Accept</key><value>application/json</value></entry></headers><parameters><parameter><name>apiToken</name><value><stringValue>tok-777</stringValue></value></parameter></parameters><note>Bearer abcdefghijkl</note></module>';
+  const escaped = xml.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  await withFive9({ getIVRScripts: env('getIVRScripts', `<return><name>Main</name><xmlDefinition>${escaped}</xmlDefinition></return>`) }, async () => {
+    const script = await callTool(cfg, 'get_ivr_script', { name: 'Main' });
+    const text = JSON.stringify(script);
+    for (const s of ['dXNlcjpzM2NyZXQ=', 'K-12345-abc', 'tok-777', 'abcdefghijkl']) assert.ok(!text.includes(s), `leaks ${s}`);
+    assert.ok(text.includes('application/json') && text.includes('<key>Authorization</key>'));
+  });
+});
