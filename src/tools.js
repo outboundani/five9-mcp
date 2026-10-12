@@ -6,7 +6,7 @@ import { Five9RestClient, Five9RestError } from './five9rest.js';
 import { restCallRefusal, redactSecrets, redactResult } from './rest-rules.js';
 import { ABOUT } from './about.js';
 import { validateFlow, collectFlowRefs, composeIvrXml, flowToMermaid, scriptXmlToMermaid, IVR_NODE_TYPES } from './ivr.js';
-import { ivrCallouts } from './callouts.js';
+import { ivrCallouts, hasRedactionMarker, REDACTION_MARKER_PROBLEM } from './callouts.js';
 import { synthesizeUlawWav } from './tts.js';
 
 // Every mixed-action handler ends in an exact === chain and throws on anything
@@ -918,7 +918,7 @@ export const TOOLS = [
   },
   {
     name: 'manage_ivr_script',
-    description: 'Create, modify, or delete an IVR script. Create makes an empty script by name (optionally pushing an xml_definition); modify replaces the script body with xml_definition (the full IVR XML, as returned by get_ivr_script); delete removes it. Editing IVR XML is advanced — fetch the current definition with get_ivr_script first.',
+    description: 'Create, modify, or delete an IVR script. Create makes an empty script by name (optionally pushing an xml_definition); modify replaces the script body with xml_definition (the full IVR XML, as returned by get_ivr_script; a definition that still contains [redacted] placeholders is refused); delete removes it. Editing IVR XML is advanced — fetch the current definition with get_ivr_script first.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -1285,6 +1285,8 @@ export async function callTool(cfg, name, args) {
   if (cfg?.readOnly && WRITE_TOOLS.has(name)) {
     throw new Five9Error(`${name} is disabled: this server is in read-only mode (FIVE9_READ_ONLY).`);
   }
+  // Never write the [redacted] placeholder from an earlier result back over a real secret.
+  if (WRITE_TOOLS.has(name) && hasRedactionMarker(args || {})) throw new Five9Error(REDACTION_MARKER_PROBLEM);
   if (tool.rest) return tool.handler(new Five9RestClient(cfg), args || {}, cfg);
   const f9 = tool.five9 === false ? null : new Five9Client(cfg);
   return tool.handler(f9, args || {}, cfg);

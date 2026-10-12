@@ -72,3 +72,17 @@ export function ivrCallouts(xml) {
   }
   return { hosts: [...hosts].sort(), modules: [...modules].sort(), any: hosts.size > 0 || modules.size > 0 };
 }
+
+// The literal marker that get_ivr_script and every other redacted result carry,
+// and its encoded forms. Writing it back would store "[redacted]" in place of a
+// real secret.
+const MARKER = /\[redacted\]|&#0*91;redacted&#0*93;|&#x0*5b;redacted&#x0*5d;|%5bredacted%5d/i;
+export const REDACTION_MARKER_PROBLEM = 'This request contains [redacted] placeholders copied from an earlier result (for example get_ivr_script). Five9 would store them in place of the real secrets. Re-supply the real values, or edit only the part that changes (for an IVR script, use the Five9 IVR designer). Nothing was changed.';
+
+export function hasRedactionMarker(v, depth = 0) {
+  if (depth > 32) return false;
+  if (typeof v === 'string') return MARKER.test(v);
+  if (Array.isArray(v)) return v.some((x) => hasRedactionMarker(x, depth + 1));
+  if (v && typeof v === 'object') return Object.entries(v).some(([k, x]) => MARKER.test(k) || hasRedactionMarker(x, depth + 1));
+  return false;
+}

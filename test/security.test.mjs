@@ -351,3 +351,29 @@ test('an IVR script that calls out to any host needs the exact host list confirm
     assert.deepEqual(got.externalHosts, ['exfil.example.net']);
   });
 });
+
+// ---------- 9. Never write the redaction placeholder back ----------
+
+test('a write that carries [redacted] from an earlier result is refused before any request', async () => {
+  const cases = [
+    ['manage_ivr_script', { action: 'modify', name: 'Main', xml_definition: '<module><entry><key>Authorization</key><value>[redacted]</value></entry></module>' }],
+    ['manage_ivr_script', { action: 'create', name: 'Main', xml_definition: '<a>&#91;redacted&#93;</a>' }],
+    ['manage_ivr_script', { action: 'create', name: 'Main', xml_definition: '<a>https://x.example/?k=%5Bredacted%5D</a>', confirm_callout_hosts: ['x.example'] }],
+    ['modify_campaign', { campaign_name: 'C', changes: { description: 'see [REDACTED]' } }],
+    ['manage_web_connector', { action: 'create', name: 'CRM', url: 'https://crm.example.com/?key=[redacted]' }],
+  ];
+  for (const [tool, args] of cases) {
+    await withFive9({}, async (calls) => {
+      await assert.rejects(() => callTool(cfg, tool, args), /\[redacted\] placeholders/, tool);
+      assert.deepEqual(calls.map((c) => c.soap), [], tool);
+    });
+  }
+  // The real round trip: get, then send the scrubbed text back.
+  const xml = '<module><entry><key>Authorization</key><value>Basic dXNlcjpzM2NyZXQ=</value></entry></module>';
+  const escaped = xml.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  await withFive9({ getIVRScripts: env('getIVRScripts', `<return><name>Main</name><xmlDefinition>${escaped}</xmlDefinition></return>`) }, async (calls) => {
+    const got = await callTool(cfg, 'get_ivr_script', { name: 'Main' });
+    await assert.rejects(() => callTool(cfg, 'manage_ivr_script', { action: 'modify', name: 'Main', xml_definition: got.xmlDefinition }), /\[redacted\] placeholders/);
+    assert.ok(!calls.some((c) => c.soap === 'modifyIVRScript'));
+  });
+});
