@@ -7,6 +7,33 @@ const NS = {
   supervisor: 'http://service.supervisor.ws.five9.com/',
 };
 
+// CSV cells for list and CRM imports (addToListCsv, updateContactsCsv,
+// deleteFromContactsCsv). A line break inside a value starts a new CSV row on
+// Five9's side, so one "record" could carry hundreds: a bare CR survives
+// escapeXml and every XML parser turns it into LF before Five9's CSV reader
+// sees it. Values and field names with CR, LF or any other control character
+// (including NEL and the Unicode line and paragraph separators) are refused;
+// the separator and quotes are quoted per RFC 4180. One record is always
+// exactly one CSV line.
+const CSV_FORBIDDEN = /[\x00-\x08\x0a-\x1f\x7f\u0085\u2028\u2029]/;
+
+export function csvCell(v) {
+  if (v !== null && v !== undefined && typeof v === 'object') throw new Five9Error('Record values must be plain text. Nothing was sent to Five9.');
+  const s = String(v ?? '');
+  if (CSV_FORBIDDEN.test(s)) throw new Five9Error('Record values cannot contain line breaks or control characters. Nothing was sent to Five9.');
+  return /[",]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
+}
+
+export function buildCsv(rows, names) {
+  for (const n of names) {
+    if (typeof n !== 'string' || !n || CSV_FORBIDDEN.test(n)) throw new Five9Error('Field names cannot be empty or contain line breaks or control characters. Nothing was sent to Five9.');
+  }
+  const lines = rows.map((rec) => names.map((n) => csvCell(rec[n])).join(','));
+  const csv = lines.join('\n');
+  if (csv.split('\n').length !== rows.length) throw new Five9Error('CSV row count does not match the records. Nothing was sent to Five9.');
+  return csv;
+}
+
 export function escapeXml(v) {
   return String(v ?? '')
     .replace(/&/g, '&amp;')
@@ -79,6 +106,13 @@ export function toArray(v) {
 
 export class Five9Error extends Error {}
 
+// action -> SOAP method lookups use OWN properties and exact strings only, so
+// "constructor", "__proto__" or "toString" can never resolve to a prototype
+// member. Returns undefined for anything unrecognized.
+export function ownAction(map, action) {
+  return typeof action === 'string' && Object.hasOwn(map, action) ? map[action] : undefined;
+}
+
 // SOAP operations allowed in read-only mode. setSessionParameters only scopes
 // the supervisor stats session; it changes no configuration.
 const READ_ONLY_METHOD = /^(get\w*|is\w*|checkDncForNumbers|runReport|setSessionParameters)$/;
@@ -142,14 +176,103 @@ const ELEMENT_ORDERS = {
   addOrderByField: ['descending', 'fieldName', 'rank'],
 };
 
+// Every element NAME written to Five9 must be a plain identifier. Keys come
+// from model-controlled objects (changes, fields, criteria), so without this a
+// key such as "description></description><type>DoNotDial</type><!--" would
+// inject XML into the SOAP body. Values are always escaped by escapeXml.
+export const XML_NAME = /^[A-Za-z_][A-Za-z0-9_]{0,63}$/;
+const BLOCKED_KEYS = new Set(['__proto__', 'constructor', 'prototype']);
+
+function checkXmlName(name) {
+  if (typeof name !== 'string' || !XML_NAME.test(name) || BLOCKED_KEYS.has(name)) {
+    throw new Five9Error(`Field name ${JSON.stringify(String(name).slice(0, 80))} is not allowed. Nothing was sent to Five9.`);
+  }
+}
+
+// What a caller may write through changes / fields, per operation: the WSDL
+// field names this server supports. Identity fields (name, userName, id) are
+// never writable this way: the target object comes only from the top-level
+// tool argument (use the rename tools to rename).
+const without = (list, drop) => list.filter((k) => !drop.includes(k));
+export const RECORDING_EGRESS_FIELDS = ['useFtp', 'ftpHost', 'ftpUser', 'ftpPassword'];
+export const WRITABLE_FIELDS = {
+  // Recording FTP settings are not writable here: pointing call recordings at an
+  // outside FTP server is data egress, so it stays a Five9 admin console task.
+  campaign: without([...new Set([...OUTBOUND_CAMPAIGN_ORDER, ...INBOUND_CAMPAIGN_ORDER])], ['name', 'state', 'type', ...RECORDING_EGRESS_FIELDS]),
+  campaignProfile: without(ELEMENT_ORDERS.campaignProfile, ['name']),
+  skill: without(ELEMENT_ORDERS.skill, ['name', 'id']),
+  disposition: without(ELEMENT_ORDERS.disposition, ['name']),
+  contactField: ['displayAs', 'mapTo', 'type'],
+  userGeneralInfo: without(ELEMENT_ORDERS.userGeneralInfo, ['userName', 'id', 'fullName']),
+  grouping: ELEMENT_ORDERS.grouping,
+  criteria: ELEMENT_ORDERS.addCriteria,
+  orderBy: ELEMENT_ORDERS.addOrderByField,
+  permissions: ['admin', 'crmManager', 'reporting', 'supervisor'],
+};
+
+// Validates a caller-supplied object against WRITABLE_FIELDS[kind]: exact,
+// case-sensitive keys only; a nested object is allowed only where the WSDL
+// child order is known (ELEMENT_ORDERS) and its keys must be in it.
+// Returns a refusal string or null.
+export function writableProblem(kind, obj, label = kind) {
+  const allowed = WRITABLE_FIELDS[kind];
+  if (!allowed) return `No writable field list for ${kind}.`;
+  if (obj === undefined || obj === null) return null;
+  if (typeof obj !== 'object' || Array.isArray(obj)) return `${label} must be an object.`;
+  const walk = (o, list, path, depth) => {
+    if (depth > 6) return `${path} nests too deeply.`;
+    for (const [k, v] of Object.entries(o)) {
+      if (!XML_NAME.test(k) || BLOCKED_KEYS.has(k) || !list.includes(k)) {
+        return `${path} field ${JSON.stringify(k.slice(0, 80))} is not allowed. Allowed: ${list.join(', ')}.`;
+      }
+      // None of the writable WSDL fields is a list: an array would write the element several times.
+      if (Array.isArray(v)) return `${path}.${k} cannot be a list.`;
+      for (const x of [v]) {
+        if (x && typeof x === 'object') {
+          const childList = Array.isArray(x) ? null : ELEMENT_ORDERS[k];
+          if (!childList) return `${path}.${k} cannot be an object here.`;
+          const r = walk(x, childList, `${path}.${k}`, depth + 1);
+          if (r) return r;
+        } else if (!(x === null || ['string', 'number', 'boolean'].includes(typeof x))) {
+          return `${path}.${k} has an unsupported value.`;
+        }
+      }
+    }
+    return null;
+  };
+  return walk(obj, allowed, label, 0);
+}
+
+// set_user_roles permissions: { admin|crmManager|reporting|supervisor: [ "Tab" | { type, value } ] }.
+export function permissionsProblem(permissions) {
+  if (permissions === undefined || permissions === null) return null;
+  if (typeof permissions !== 'object' || Array.isArray(permissions)) return 'permissions must be an object.';
+  for (const [role, list] of Object.entries(permissions)) {
+    if (!WRITABLE_FIELDS.permissions.includes(role)) return `permissions role ${JSON.stringify(role.slice(0, 80))} is not allowed. Allowed: ${WRITABLE_FIELDS.permissions.join(', ')}.`;
+    for (const p of toArray(list)) {
+      if (typeof p === 'string') continue;
+      if (!p || typeof p !== 'object' || Array.isArray(p)) return `permissions.${role} items must be strings or { type, value }.`;
+      for (const k of Object.keys(p)) if (k !== 'type' && k !== 'value') return `permissions.${role} item field ${JSON.stringify(k.slice(0, 80))} is not allowed.`;
+      if (typeof p.type !== 'string' || (p.value !== undefined && typeof p.value !== 'boolean')) return `permissions.${role} items need a string type and an optional boolean value.`;
+    }
+  }
+  return null;
+}
+
+function assertWritable(kind, obj, label) {
+  const r = writableProblem(kind, obj, label);
+  if (r) throw new Five9Error(`${r} Nothing was sent to Five9.`);
+}
+
 // Serializes a plain JS value to XML under the given element name, applying
 // the pinned child order when one is known for that element name.
 export function xmlOf(value, name, order) {
+  checkXmlName(name);
   if (value === null || value === undefined) return '';
   if (Array.isArray(value)) return value.map((v) => xmlOf(v, name)).join('');
   if (typeof value === 'object') {
     const ord = order || ELEMENT_ORDERS[name] || Object.keys(value);
-    const keys = [...ord.filter((k) => k in value), ...Object.keys(value).filter((k) => !ord.includes(k))];
+    const keys = [...ord.filter((k) => Object.hasOwn(value, k)), ...Object.keys(value).filter((k) => !ord.includes(k))];
     const inner = keys.map((k) => xmlOf(value[k], k)).join('');
     return `<${name}>${inner}</${name}>`;
   }
@@ -161,6 +284,7 @@ export function mergeChanges(base, changes) {
   const out = { ...base };
   for (const [k, v] of Object.entries(changes || {})) {
     if (v === undefined) continue;
+    checkXmlName(k); // also refuses __proto__, constructor, prototype
     const existing = Object.keys(out).find((x) => x.toLowerCase() === k.toLowerCase()) || k;
     out[existing] = (v && typeof v === 'object' && !Array.isArray(v) && typeof out[existing] === 'object' && out[existing] !== null)
       ? mergeChanges(out[existing], v)
@@ -234,7 +358,7 @@ export class Five9Client {
 
   async controlCampaign(action, campaignName) {
     const methods = { start: 'startCampaign', stop: 'stopCampaign', force_stop: 'forceStopCampaign', reset: 'resetCampaign', reset_list_positions: 'resetListPosition' };
-    const method = methods[action];
+    const method = ownAction(methods, action);
     if (!method) throw new Five9Error(`Unknown campaign action "${action}" — use start, stop, force_stop, reset, or reset_list_positions.`);
     await this.admin(method, `<campaignName>${escapeXml(campaignName)}</campaignName>`);
     return { ok: true, action, campaign: campaignName };
@@ -260,10 +384,7 @@ export class Five9Client {
     const mappings = names.map((n, i) =>
       `<fieldsMapping><columnNumber>${i + 1}</columnNumber><fieldName>${escapeXml(n)}</fieldName>` +
       `<key>${n === key}</key></fieldsMapping>`).join('');
-    const csv = rows.map((rec) => names.map((n) => {
-      const v = String(rec[n] ?? '');
-      return /[",\n]/.test(v) ? `"${v.replace(/"/g, '""')}"` : v;
-    }).join(',')).join('\n');
+    const csv = buildCsv(rows, names);
     const crmAddMode = opts.crmAddMode || 'ADD_NEW';
     const crmUpdateMode = opts.crmUpdateMode || 'UPDATE_FIRST';
     const listAddMode = opts.listAddMode || 'ADD_FIRST';
@@ -302,10 +423,7 @@ export class Five9Client {
     const mappings = names.map((n, i) =>
       `<fieldsMapping><columnNumber>${i + 1}</columnNumber><fieldName>${escapeXml(n)}</fieldName>` +
       `<key>${keys.includes(n)}</key></fieldsMapping>`).join('');
-    const csv = rows.map((rec) => names.map((n) => {
-      const v = String(rec[n] ?? '');
-      return /[",\n]/.test(v) ? `"${v.replace(/"/g, '""')}"` : v;
-    }).join(',')).join('\n');
+    const csv = buildCsv(rows, names);
     const crmAddMode = opts.crmAddMode || 'DONT_ADD';
     const crmUpdateMode = opts.crmUpdateMode || 'UPDATE_FIRST';
     // crmUpdateSettings order: basicImportSettings (fieldsMapping, separator,
@@ -569,11 +687,13 @@ export class Five9Client {
   // Read-modify-write: fetch the full campaign, merge the changes, send the
   // whole object back in schema order.
   async modifyCampaign(name, changes) {
+    assertWritable('campaign', changes, 'changes');
     const details = await this.getCampaignDetails(name);
     const { campaignKind, ...current } = details;
     if (campaignKind === 'autodial') throw new Five9Error('Editing autodial campaigns is not supported yet.');
     delete current.state; // state changes go through control_campaign
     const merged = mergeChanges(current, changes);
+    merged.name = name; // the target is only ever the campaign_name argument
     if (campaignKind === 'outbound') {
       await this.admin('modifyOutboundCampaign', xmlOf(merged, 'campaign', OUTBOUND_CAMPAIGN_ORDER));
     } else {
@@ -595,7 +715,7 @@ export class Five9Client {
   // ---- Campaign associations ----
 
   async manageCampaignSkills(action, campaignName, skills) {
-    const method = { add: 'addSkillsToCampaign', remove: 'removeSkillsFromCampaign' }[action];
+    const method = ownAction({ add: 'addSkillsToCampaign', remove: 'removeSkillsFromCampaign' }, action);
     if (!method) throw new Five9Error(`Unknown action "${action}" — use add or remove.`);
     const inner = `<campaignName>${escapeXml(campaignName)}</campaignName>` + toArray(skills).map((s) => `<skills>${escapeXml(s)}</skills>`).join('');
     await this.admin(method, inner);
@@ -603,7 +723,7 @@ export class Five9Client {
   }
 
   async manageCampaignDnis(action, campaignName, dnis) {
-    const method = { add: 'addDNISToCampaign', remove: 'removeDNISFromCampaign' }[action];
+    const method = ownAction({ add: 'addDNISToCampaign', remove: 'removeDNISFromCampaign' }, action);
     if (!method) throw new Five9Error(`Unknown action "${action}" — use add or remove.`);
     const inner = `<campaignName>${escapeXml(campaignName)}</campaignName>` + toArray(dnis).map((d) => `<DNISList>${escapeXml(d)}</DNISList>`).join('');
     await this.admin(method, inner);
@@ -611,7 +731,7 @@ export class Five9Client {
   }
 
   async manageCampaignDispositions(action, campaignName, dispositions) {
-    const method = { add: 'addDispositionsToCampaign', remove: 'removeDispositionsFromCampaign' }[action];
+    const method = ownAction({ add: 'addDispositionsToCampaign', remove: 'removeDispositionsFromCampaign' }, action);
     if (!method) throw new Five9Error(`Unknown action "${action}" — use add or remove.`);
     const inner = `<campaignName>${escapeXml(campaignName)}</campaignName>` + toArray(dispositions).map((d) => `<dispositions>${escapeXml(d)}</dispositions>`).join('');
     await this.admin(method, inner);
@@ -626,16 +746,20 @@ export class Five9Client {
   }
 
   async createCampaignProfile(fields) {
-    if (!fields?.name) throw new Five9Error('name is required.');
-    await this.admin('createCampaignProfile', xmlOf(fields, 'campaignProfile'));
-    return { ok: true, created: fields.name };
+    const { name, ...rest } = fields || {};
+    if (!name) throw new Five9Error('name is required.');
+    assertWritable('campaignProfile', rest, 'fields');
+    await this.admin('createCampaignProfile', xmlOf({ ...rest, name }, 'campaignProfile'));
+    return { ok: true, created: name };
   }
 
   async modifyCampaignProfile(name, changes) {
+    assertWritable('campaignProfile', changes, 'fields');
     const all = await this.getCampaignProfiles(name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'));
     const current = all.find((p) => p.name === name);
     if (!current) throw new Five9Error(`Campaign profile "${name}" not found.`);
     const merged = mergeChanges(current, changes);
+    merged.name = name;
     await this.admin('modifyCampaignProfile', xmlOf(merged, 'campaignProfile'));
     return { ok: true, profile: name, applied: Object.keys(changes || {}) };
   }
@@ -654,16 +778,20 @@ export class Five9Client {
 
   async createSkill(fields) {
     if (!fields?.name) throw new Five9Error('name is required.');
+    const { name: _skillName, ...skillRest } = fields;
+    assertWritable('skill', skillRest, 'fields');
     const skill = { description: fields.description, messageOfTheDay: fields.messageOfTheDay, name: fields.name, routeVoiceMails: fields.routeVoiceMails ?? false };
     await this.admin('createSkill', xmlOf({ skill }, 'skillInfo'));
     return { ok: true, created: fields.name };
   }
 
   async modifySkill(name, changes) {
+    assertWritable('skill', changes, 'fields');
     const skills = await this.getSkills(name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'));
     const current = skills.find((s) => s.name === name);
     if (!current) throw new Five9Error(`Skill "${name}" not found.`);
     const merged = mergeChanges(current, changes);
+    merged.name = name;
     await this.admin('modifySkill', xmlOf(merged, 'skill'));
     return { ok: true, skill: name, applied: Object.keys(changes || {}) };
   }
@@ -674,7 +802,7 @@ export class Five9Client {
   }
 
   async manageUserSkill(action, userName, skillName, level = 1) {
-    const method = { add: 'userSkillAdd', set_level: 'userSkillModify', remove: 'userSkillRemove' }[action];
+    const method = ownAction({ add: 'userSkillAdd', set_level: 'userSkillModify', remove: 'userSkillRemove' }, action);
     if (!method) throw new Five9Error(`Unknown action "${action}" — use add, set_level, or remove.`);
     const userSkill = { level: Number(level) || 1, skillName, userName };
     await this.admin(method, xmlOf(userSkill, 'userSkill'));
@@ -713,11 +841,13 @@ export class Five9Client {
   }
 
   async modifyUser(userName, changes) {
+    assertWritable('userGeneralInfo', changes, 'changes');
     const r = await this.admin('getUserGeneralInfo', `<userName>${escapeXml(userName)}</userName>`);
     const current = r.return;
     if (!current) throw new Five9Error(`User "${userName}" not found.`);
     const merged = mergeChanges(current, changes);
     delete merged.fullName; // derived field — Five9 rejects it on modify
+    merged.userName = userName; // the target is only ever the user_name argument
     await this.admin('modifyUser', xmlOf(merged, 'userGeneralInfo'));
     return { ok: true, user: userName, applied: Object.keys(changes || {}) };
   }
@@ -735,18 +865,22 @@ export class Five9Client {
   // ---- Dispositions ----
 
   async createDisposition(fields) {
-    if (!fields?.name || !fields?.type) throw new Five9Error('name and type are required (see list_dispositions for type examples like FinalDisp, RedialNumber, DoNotDial).');
-    await this.admin('createDisposition', xmlOf(fields, 'disposition'));
-    return { ok: true, created: fields.name, type: fields.type };
+    const { name, ...rest } = fields || {};
+    if (!name || !rest.type) throw new Five9Error('name and type are required (see list_dispositions for type examples like FinalDisp, RedialNumber, DoNotDial).');
+    assertWritable('disposition', rest, 'fields');
+    await this.admin('createDisposition', xmlOf({ ...rest, name }, 'disposition'));
+    return { ok: true, created: name, type: rest.type };
   }
 
   async modifyDisposition(name, changes) {
+    assertWritable('disposition', changes, 'fields');
     const r = await this.admin('getDisposition', `<dispositionName>${escapeXml(name)}</dispositionName>`);
     const current = r.return;
     if (!current) throw new Five9Error(`Disposition "${name}" not found.`);
     // Five9 rejects round-tripped system fields here — send a sparse object:
     // the identifying name + type plus only the changed fields.
     const merged = mergeChanges({ name: current.name, type: current.type, typeParameters: current.typeParameters }, changes);
+    merged.name = name;
     await this.admin('modifyDisposition', xmlOf(merged, 'disposition'));
     return { ok: true, disposition: name, applied: Object.keys(changes || {}) };
   }
@@ -777,10 +911,12 @@ export class Five9Client {
 
   // Modify a CRM contact field (read-modify-write; e.g. change displayAs).
   async modifyContactField(name, changes) {
+    assertWritable('contactField', changes, 'changes');
     const all = await this.getContactFields(name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'));
     const current = all.find((f) => f.name === name);
     if (!current) throw new Five9Error(`Contact field "${name}" not found.`);
     const merged = mergeChanges(current, changes);
+    merged.name = name;
     await this.admin('modifyContactField', xmlOf(merged, 'field'));
     return { ok: true, field: name, applied: Object.keys(changes || {}) };
   }
@@ -790,10 +926,7 @@ export class Five9Client {
     if (!names.length) throw new Five9Error('criteria must contain at least one field (e.g. {"number1": "5551234567"}).');
     const mappings = names.map((n, i) =>
       `<fieldsMapping><columnNumber>${i + 1}</columnNumber><fieldName>${escapeXml(n)}</fieldName><key>true</key></fieldsMapping>`).join('');
-    const csvLine = names.map((n) => {
-      const v = String(criteria[n] ?? '');
-      return /[",\n]/.test(v) ? `"${v.replace(/"/g, '""')}"` : v;
-    }).join(',');
+    const csvLine = buildCsv([criteria], names);
     const r = await this.admin('deleteFromContactsCsv',
       `<crmDeleteSettings>${mappings}<skipHeaderLine>false</skipHeaderLine>` +
       `<crmDeleteMode>DELETE_SOLE_MATCHES</crmDeleteMode></crmDeleteSettings>` +
@@ -815,7 +948,7 @@ export class Five9Client {
       return { ok: true, deleted: fields.name };
     }
     if (!fields?.name || !fields?.text) throw new Five9Error('name and text are required.');
-    const method = { create: 'addPromptTTS', modify: 'modifyPromptTTS' }[action];
+    const method = ownAction({ create: 'addPromptTTS', modify: 'modifyPromptTTS' }, action);
     if (!method) throw new Five9Error(`Unknown action "${action}" — use create, modify, or delete.`);
     const prompt = { description: fields.description, languages: fields.language || 'en-US', name: fields.name, type: 'TTSGenerated' };
     const ttsInfo = { language: fields.language || 'en-US', text: fields.text, voice: fields.voice };
@@ -961,6 +1094,8 @@ export class Five9Client {
   // rolesToSet, rolesToRemove. The supervisor role requires >=1 viewable tab,
   // so it defaults to a sensible view set unless permissions.supervisor is given.
   async setUserRoles(userName, { add, remove, permissions } = {}) {
+    const permIssue = permissionsProblem(permissions);
+    if (permIssue) throw new Five9Error(`${permIssue} Nothing was sent to Five9.`);
     const gi = (await this.admin('getUserGeneralInfo', `<userName>${escapeXml(userName)}</userName>`)).return;
     if (!gi) throw new Five9Error(`User "${userName}" not found.`);
     delete gi.fullName;
@@ -1020,6 +1155,9 @@ export class Five9Client {
   }
 
   async modifyCampaignProfileCrmCriteria(profileName, { grouping, addCriteria, removeCriteria } = {}) {
+    assertWritable('grouping', grouping, 'grouping');
+    toArray(addCriteria).forEach((c, i) => assertWritable('criteria', c, `add_criteria[${i}]`));
+    toArray(removeCriteria).forEach((c, i) => assertWritable('criteria', c, `remove_criteria[${i}]`));
     let xml = `<profileName>${escapeXml(profileName)}</profileName>`;
     if (grouping) xml += xmlOf(grouping, 'grouping');
     xml += toArray(addCriteria).map((c) => xmlOf(c, 'addCriteria')).join('');
@@ -1029,6 +1167,7 @@ export class Five9Client {
   }
 
   async modifyCampaignProfileFilterOrder(campaignProfile, { addOrderByField, removeOrderByField } = {}) {
+    toArray(addOrderByField).forEach((f, i) => assertWritable('orderBy', f, `add_order_by[${i}]`));
     let xml = `<campaignProfile>${escapeXml(campaignProfile)}</campaignProfile>`;
     xml += toArray(addOrderByField).map((f) => xmlOf(f, 'addOrderByField')).join('');
     xml += toArray(removeOrderByField).map((f) => `<removeOrderByField>${escapeXml(f)}</removeOrderByField>`).join('');
@@ -1064,7 +1203,7 @@ export class Five9Client {
       return { ok: true, deleted: name };
     }
     if (!name || !wavBase64) throw new Five9Error('name and wav_base64 are required.');
-    const method = { create: 'addPromptWavInline', modify: 'modifyPromptWavInline' }[action];
+    const method = ownAction({ create: 'addPromptWavInline', modify: 'modifyPromptWavInline' }, action);
     if (!method) throw new Five9Error(`Unknown action "${action}" — use create, modify, or delete.`);
     const prompt = { description, languages: language || 'en-US', name, type: 'PreRecorded' };
     await this.admin(method, xmlOf(prompt, 'prompt') + `<wavFile>${escapeXml(wavBase64)}</wavFile>`);

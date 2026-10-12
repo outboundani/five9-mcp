@@ -3,10 +3,18 @@
 
 import { Five9Client, Five9Error } from './five9.js';
 import { Five9RestClient, Five9RestError } from './five9rest.js';
-import { restCallRefusal, redactSecrets } from './rest-rules.js';
+import { restCallRefusal, redactSecrets, redactResult } from './rest-rules.js';
 import { ABOUT } from './about.js';
 import { validateFlow, collectFlowRefs, composeIvrXml, flowToMermaid, scriptXmlToMermaid, IVR_NODE_TYPES } from './ivr.js';
+import { ivrCallouts, hasRedactionMarker, REDACTION_MARKER_PROBLEM, hasXmlDeclarations, XML_DECLARATION_PROBLEM, isIpHost } from './callouts.js';
 import { synthesizeUlawWav } from './tts.js';
+
+// Every mixed-action handler ends in an exact === chain and throws on anything
+// it does not recognize (missing, "CREATE", "__proto__", ...). It never falls
+// through to a delete or a write.
+export function unknownAction(action, allowed) {
+  return new Five9Error(`Unknown action ${JSON.stringify(action ?? null)}. Use one of: ${allowed.join(', ')}. Nothing was changed.`);
+}
 
 export const TOOLS = [
   {
@@ -194,9 +202,10 @@ export const TOOLS = [
       additionalProperties: false,
     },
     handler: (f9, a) => {
-      if (a.action === 'create') return f9.createCampaignProfile({ name: a.name, ...(a.fields || {}) });
+      if (a.action === 'create') return f9.createCampaignProfile({ ...(a.fields || {}), name: a.name });
       if (a.action === 'modify') return f9.modifyCampaignProfile(a.name, a.fields || {});
-      return f9.deleteCampaignProfile(a.name);
+      if (a.action === 'delete') return f9.deleteCampaignProfile(a.name);
+      throw unknownAction(a.action, ['create', 'modify', 'delete']);
     },
   },
   {
@@ -223,9 +232,10 @@ export const TOOLS = [
       additionalProperties: false,
     },
     handler: (f9, a) => {
-      if (a.action === 'create') return f9.createSkill({ name: a.name, ...(a.fields || {}) });
+      if (a.action === 'create') return f9.createSkill({ ...(a.fields || {}), name: a.name });
       if (a.action === 'modify') return f9.modifySkill(a.name, a.fields || {});
-      return f9.deleteSkill(a.name);
+      if (a.action === 'delete') return f9.deleteSkill(a.name);
+      throw unknownAction(a.action, ['create', 'modify', 'delete']);
     },
   },
   {
@@ -332,10 +342,11 @@ export const TOOLS = [
       additionalProperties: false,
     },
     handler: (f9, a) => {
-      if (a.action === 'create') return f9.createDisposition({ name: a.name, ...(a.fields || {}) });
+      if (a.action === 'create') return f9.createDisposition({ ...(a.fields || {}), name: a.name });
       if (a.action === 'modify') return f9.modifyDisposition(a.name, a.fields || {});
       if (a.action === 'rename') return f9.renameDisposition(a.name, a.new_name);
-      return f9.deleteDisposition(a.name);
+      if (a.action === 'delete') return f9.deleteDisposition(a.name);
+      throw unknownAction(a.action, ['create', 'modify', 'rename', 'delete']);
     },
   },
   {
@@ -356,7 +367,8 @@ export const TOOLS = [
     handler: (f9, a) => {
       if (a.action === 'create') return f9.createContactField({ name: a.name, type: a.type, displayAs: a.display_as });
       if (a.action === 'modify') return f9.modifyContactField(a.name, a.changes || { ...(a.display_as ? { displayAs: a.display_as } : {}), ...(a.type ? { type: a.type } : {}) });
-      return f9.deleteContactField(a.name);
+      if (a.action === 'delete') return f9.deleteContactField(a.name);
+      throw unknownAction(a.action, ['create', 'modify', 'delete']);
     },
   },
   {
@@ -405,7 +417,12 @@ export const TOOLS = [
       required: ['name'],
       additionalProperties: false,
     },
-    handler: (f9, a) => f9.getIVRScript(a.name),
+    // Scripts can embed web service credentials: scrubbed before they reach the model.
+    handler: async (f9, a) => {
+      const script = await f9.getIVRScript(a.name);
+      const c = typeof script?.xmlDefinition === 'string' ? ivrCallouts(script.xmlDefinition) : { hosts: [], modules: [] };
+      return { ...redactResult(script), externalHosts: c.hosts, calloutModules: c.modules };
+    },
   },
   {
     name: 'manage_agent_group',
@@ -464,7 +481,8 @@ export const TOOLS = [
       properties: { pattern: { type: 'string', description: 'Java-style regex on connector name (default ".*")' } },
       additionalProperties: false,
     },
-    handler: (f9, a) => f9.getWebConnectors(a.pattern || '.*'),
+    // URLs and constants can carry CRM keys: scrubbed before they reach the model.
+    handler: async (f9, a) => redactResult(await f9.getWebConnectors(a.pattern || '.*')),
   },
   {
     name: 'manage_speed_dial',
@@ -894,12 +912,13 @@ export const TOOLS = [
     handler: (f9, a) => {
       if (a.action === 'get') return f9.getCampaignProfileFilter(a.profile_name);
       if (a.action === 'set_criteria') return f9.modifyCampaignProfileCrmCriteria(a.profile_name, { grouping: a.grouping, addCriteria: a.add_criteria, removeCriteria: a.remove_criteria });
-      return f9.modifyCampaignProfileFilterOrder(a.profile_name, { addOrderByField: a.add_order_by, removeOrderByField: a.remove_order_by });
+      if (a.action === 'set_order') return f9.modifyCampaignProfileFilterOrder(a.profile_name, { addOrderByField: a.add_order_by, removeOrderByField: a.remove_order_by });
+      throw unknownAction(a.action, ['get', 'set_criteria', 'set_order']);
     },
   },
   {
     name: 'manage_ivr_script',
-    description: 'Create, modify, or delete an IVR script. Create makes an empty script by name (optionally pushing an xml_definition); modify replaces the script body with xml_definition (the full IVR XML, as returned by get_ivr_script); delete removes it. Editing IVR XML is advanced — fetch the current definition with get_ivr_script first.',
+    description: 'Create, modify, or delete an IVR script. Create makes an empty script by name (optionally pushing an xml_definition); modify replaces the script body with xml_definition (the full IVR XML, as returned by get_ivr_script; a definition that still contains [redacted] placeholders is refused); delete removes it. Editing IVR XML is advanced — fetch the current definition with get_ivr_script first.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -907,14 +926,26 @@ export const TOOLS = [
         name: { type: 'string', description: 'IVR script name' },
         xml_definition: { type: 'string', description: 'Full IVR script XML (create optional, modify required)' },
         description: { type: 'string' },
+        confirm_callout_hosts: { type: 'array', items: { type: 'string' }, description: 'Required when xml_definition calls out to any URL or host (web service, HTTP or query modules): the exact list of hosts it reaches, as reported by the refusal, after the user confirmed sending call data there. Use [] when only call-out modules without a fixed host were found.' },
       },
       required: ['action', 'name'],
       additionalProperties: false,
     },
     handler: (f9, a) => {
+      if (a.action === 'create' || a.action === 'modify') {
+        const c = a.xml_definition ? ivrCallouts(a.xml_definition) : { any: false, hosts: [], modules: [] };
+        if (c.any) {
+          const confirmed = Array.isArray(a.confirm_callout_hosts) ? a.confirm_callout_hosts.map((h) => String(h).toLowerCase()).sort() : null;
+          if (!confirmed || confirmed.length !== c.hosts.length || confirmed.some((h, i) => h !== c.hosts[i])) {
+            const shown = c.hosts.map((h) => (isIpHost(h) ? `${h} (RAW IP ADDRESS, not a domain name)` : h));
+            throw new Five9Error(`This IVR script sends call data to outside systems. Hosts: ${shown.join(', ') || 'none fixed'}${c.dynamic ? ', plus a URL built at run time' : ''}${c.modules.length ? `; call-out modules: ${c.modules.join(', ')}` : ''}. Show the user these destinations and, only if they agree, call again with confirm_callout_hosts set to exactly [${c.hosts.map((h) => JSON.stringify(h)).join(', ')}]. Nothing was changed.`);
+          }
+        }
+      }
       if (a.action === 'create') return f9.createIVRScript(a.name, a.xml_definition, a.description);
       if (a.action === 'modify') return f9.modifyIVRScript(a.name, a.xml_definition, a.description);
-      return f9.deleteIVRScript(a.name);
+      if (a.action === 'delete') return f9.deleteIVRScript(a.name);
+      throw unknownAction(a.action, ['create', 'modify', 'delete']);
     },
   },
   {
@@ -994,8 +1025,14 @@ export const TOOLS = [
     handler: (r, a) => {
       if (a.action === 'list') return r.listCircles({ cursor: a.cursor, limit: a.limit });
       if (a.action === 'get') return r.getCircle(a.circle_id);
-      if (a.action === 'create') return r.createCircle({ name: a.name, ...(a.fields || {}) });
-      return r.deleteCircle(a.circle_id);
+      if (a.action === 'create') {
+        // The circle is named only by the top-level name; identifiers inside fields are refused.
+        const bad = Object.keys(a.fields || {}).find((k) => ['name', 'id'].includes(k.toLowerCase()));
+        if (bad) throw new Five9RestError(`fields.${bad} is not allowed: the circle name comes from name.`);
+        return r.createCircle({ ...(a.fields || {}), name: a.name });
+      }
+      if (a.action === 'delete') return r.deleteCircle(a.circle_id);
+      throw unknownAction(a.action, ['list', 'get', 'create', 'delete']);
     },
   },
   {
@@ -1249,6 +1286,10 @@ export async function callTool(cfg, name, args) {
   if (cfg?.readOnly && WRITE_TOOLS.has(name)) {
     throw new Five9Error(`${name} is disabled: this server is in read-only mode (FIVE9_READ_ONLY).`);
   }
+  // Never write the [redacted] placeholder from an earlier result back over a real secret.
+  if (WRITE_TOOLS.has(name) && hasRedactionMarker(args || {})) throw new Five9Error(REDACTION_MARKER_PROBLEM);
+  // DOCTYPE or ENTITY declarations could make Five9's XML parser resolve external entities (XXE).
+  if (hasXmlDeclarations(args || {})) throw new Five9Error(XML_DECLARATION_PROBLEM);
   if (tool.rest) return tool.handler(new Five9RestClient(cfg), args || {}, cfg);
   const f9 = tool.five9 === false ? null : new Five9Client(cfg);
   return tool.handler(f9, args || {}, cfg);

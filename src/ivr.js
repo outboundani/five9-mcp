@@ -81,6 +81,10 @@ const minutesOf = (hhmm) => {
 
 // ---- Validation ----
 
+// Node keys are looked up as OWN properties only: "toString" or "constructor"
+// as an entry or a next target must not resolve to a prototype member.
+const hasNode = (nodes, k) => typeof k === 'string' && Object.hasOwn(nodes, k) && Boolean(nodes[k]);
+
 export function validateFlow(flow) {
   const errors = [];
   const warnings = [];
@@ -90,7 +94,7 @@ export function validateFlow(flow) {
 
   if (!keys.length) bad('flow.nodes is empty.');
   if (!flow?.entry) bad('flow.entry is required (the node the call starts at).');
-  else if (!nodes[flow.entry]) bad(`flow.entry "${flow.entry}" is not a node.`);
+  else if (!hasNode(nodes, flow.entry)) bad(`flow.entry "${flow.entry}" is not a node.`);
 
   const edgeTargets = (node) => {
     switch (node.type) {
@@ -107,7 +111,7 @@ export function validateFlow(flow) {
     if (!IVR_NODE_TYPES.includes(node.type)) { bad(`node "${key}": unknown type "${node.type}" (use ${IVR_NODE_TYPES.join(', ')}).`); continue; }
 
     for (const t of edgeTargets(node)) {
-      if (!nodes[t]) bad(`node "${key}" points at "${t}", which does not exist.`);
+      if (!hasNode(nodes, t)) bad(`node "${key}" points at "${t}", which does not exist.`);
     }
 
     if (node.type === 'play') {
@@ -163,12 +167,12 @@ export function validateFlow(flow) {
   }
 
   // Reachability from entry.
-  if (flow?.entry && nodes[flow.entry]) {
+  if (flow?.entry && hasNode(nodes, flow.entry)) {
     const seen = new Set();
     const queue = [flow.entry];
     while (queue.length) {
       const k = queue.shift();
-      if (seen.has(k) || !nodes[k]) continue;
+      if (seen.has(k) || !hasNode(nodes, k)) continue;
       seen.add(k);
       queue.push(...edgeTargets(nodes[k]));
     }
