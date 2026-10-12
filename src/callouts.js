@@ -11,7 +11,9 @@
 import { parseXml } from './five9.js';
 
 // scheme://authority, any scheme (http, https, ftp, ws, sftp, ...).
-const URL_RE = /\b([a-z][a-z0-9+.-]{1,15}):\/\/([^\s"'<>/?#\\]+)/gi;
+// The authority runs to the first "/", "?" or "#" like a java.net.URL style parser
+// would read it; backslashes are kept so "good.com\@evil.net" yields both hosts.
+const URL_RE = /\b([a-z][a-z0-9+.-]{1,15}):\/\/([^\s"'<>/?#]+)/gi;
 const CALLOUT_ELEMENT = /query|webservice|web_service|httprequest|http|restapi|rest_api|thirdparty|externaltransfer|callout|webhook|url|endpoint/i;
 // Namespace and schema declarations name URLs that are never fetched.
 const DECLARATIONS = /\s(?:xmlns(?::[\w.-]+)?|xsi:schemaLocation|xsi:noNamespaceSchemaLocation)\s*=\s*("[^"]*"|'[^']*')/g;
@@ -34,7 +36,9 @@ function views(xml) {
   for (let i = 0; i < 3; i++) { out.push(v); const next = decodeOnce(v); if (next === v) break; v = next; }
   out.push(v);
   for (const x of [...out]) {
-    try { const d = decodeURIComponent(x.replace(/%(?![0-9a-fA-F]{2})/g, '%25')); if (d !== x) out.push(d); } catch { /* not percent encoded */ }
+    // Percent decode each run on its own, so one invalid sequence cannot hide the rest.
+    const d = x.replace(/(?:%[0-9a-fA-F]{2})+/g, (m) => { try { return decodeURIComponent(m); } catch { return m; } });
+    if (d !== x) out.push(d);
   }
   // Decoded text values from the parsed document.
   try {
@@ -49,28 +53,51 @@ function views(xml) {
   return out;
 }
 
-function hostOf(authority) {
-  let a = authority.includes('@') ? authority.slice(authority.lastIndexOf('@') + 1) : authority;
-  if (a.startsWith('[')) return a.slice(0, a.indexOf(']') + 1).toLowerCase();
-  a = a.replace(/:\d*$/, '');
-  return a.toLowerCase().replace(/\.$/, '');
+// Integer and hex IPv4 forms ("3405803826", "0xcb007132") as dotted quads.
+function normalizeIp(h) {
+  let n = null;
+  if (/^\d+$/.test(h)) n = Number(h);
+  else if (/^0x[0-9a-f]+$/i.test(h)) n = parseInt(h, 16);
+  if (n !== null && Number.isFinite(n) && n >= 0 && n <= 0xffffffff) return [24, 16, 8, 0].map((b) => (n >>> b) & 255).join('.');
+  return h;
 }
+function cleanHost(a) {
+  let h = a.trim();
+  if (h.startsWith('[')) return h.slice(0, h.indexOf(']') + 1).toLowerCase();
+  h = h.replace(/:\d*$/, '').toLowerCase().replace(/\.$/, '');
+  return normalizeIp(h);
+}
+// Every host a parser could take from this authority: the part after the last
+// "@", and the part before the first backslash (with or without userinfo).
+function hostsOf(authority) {
+  const out = new Set();
+  const afterAt = authority.slice(authority.lastIndexOf('@') + 1);
+  for (const cand of [afterAt, afterAt.split('\\')[0], authority.split('\\')[0].split('@').pop()]) {
+    const h = cleanHost(cand);
+    if (h) out.add(h);
+  }
+  return out;
+}
+
+export const isIpHost = (h) => /^\d{1,3}(\.\d{1,3}){3}$/.test(h) || /^\[[0-9a-f:.]+\]$/i.test(h);
 
 // Returns { hosts: [...], modules: [...], any }.
 export function ivrCallouts(xml) {
   const hosts = new Set();
   const modules = new Set();
   for (const v of views(xml)) {
-    for (const m of v.matchAll(URL_RE)) {
-      const h = hostOf(m[2]);
-      if (h) hosts.add(h);
-    }
+    for (const m of v.matchAll(URL_RE)) for (const h of hostsOf(m[2])) hosts.add(h);
   }
   const base = String(xml).replace(DECLARATIONS, ' ');
   for (const v of [base, decodeOnce(base)]) {
     for (const m of v.matchAll(/<\s*(?:[A-Za-z_][\w.-]*:)?([A-Za-z_][\w.-]*)/g)) if (CALLOUT_ELEMENT.test(m[1])) modules.add(m[1]);
   }
-  return { hosts: [...hosts].sort(), modules: [...modules].sort(), any: hosts.size > 0 || modules.size > 0 };
+  // A URL built at run time: an url, uri or endpoint element whose text has no literal scheme://host.
+  let dynamic = false;
+  for (const m of decodeOnce(base).matchAll(/<\s*(?:[A-Za-z_][\w.-]*:)?((?:[A-Za-z_][\w.-]*)?(?:url|uri|endpoint)[\w.-]*)(?:\s[^>]*)?>([^<]*)</gi)) {
+    if (m[2].trim() && !/[a-z][a-z0-9+.-]{1,15}:\/\/[^\s/]/i.test(m[2])) dynamic = true;
+  }
+  return { hosts: [...hosts].sort(), modules: [...modules].sort(), dynamic, any: hosts.size > 0 || modules.size > 0 || dynamic };
 }
 
 // The literal marker that get_ivr_script and every other redacted result carry,
@@ -84,5 +111,17 @@ export function hasRedactionMarker(v, depth = 0) {
   if (typeof v === 'string') return MARKER.test(v);
   if (Array.isArray(v)) return v.some((x) => hasRedactionMarker(x, depth + 1));
   if (v && typeof v === 'object') return Object.entries(v).some(([k, x]) => MARKER.test(k) || hasRedactionMarker(x, depth + 1));
+  return false;
+}
+
+// DOCTYPE, ENTITY and conditional sections in XML sent to Five9 could make its
+// parser resolve external entities (XXE). Five9's designer never writes them.
+export const XML_DECLARATION_RE = /<!DOCTYPE|<!ENTITY|<!\[\s*INCLUDE|<!\[\s*IGNORE/i;
+export const XML_DECLARATION_PROBLEM = 'XML definitions cannot contain DOCTYPE, ENTITY or conditional section declarations. Nothing was changed.';
+export function hasXmlDeclarations(v, depth = 0) {
+  if (depth > 32) return false;
+  if (typeof v === 'string') return XML_DECLARATION_RE.test(v);
+  if (Array.isArray(v)) return v.some((x) => hasXmlDeclarations(x, depth + 1));
+  if (v && typeof v === 'object') return Object.values(v).some((x) => hasXmlDeclarations(x, depth + 1));
   return false;
 }

@@ -6,7 +6,7 @@ import { Five9RestClient, Five9RestError } from './five9rest.js';
 import { restCallRefusal, redactSecrets, redactResult } from './rest-rules.js';
 import { ABOUT } from './about.js';
 import { validateFlow, collectFlowRefs, composeIvrXml, flowToMermaid, scriptXmlToMermaid, IVR_NODE_TYPES } from './ivr.js';
-import { ivrCallouts, hasRedactionMarker, REDACTION_MARKER_PROBLEM } from './callouts.js';
+import { ivrCallouts, hasRedactionMarker, REDACTION_MARKER_PROBLEM, hasXmlDeclarations, XML_DECLARATION_PROBLEM, isIpHost } from './callouts.js';
 import { synthesizeUlawWav } from './tts.js';
 
 // Every mixed-action handler ends in an exact === chain and throws on anything
@@ -937,7 +937,8 @@ export const TOOLS = [
         if (c.any) {
           const confirmed = Array.isArray(a.confirm_callout_hosts) ? a.confirm_callout_hosts.map((h) => String(h).toLowerCase()).sort() : null;
           if (!confirmed || confirmed.length !== c.hosts.length || confirmed.some((h, i) => h !== c.hosts[i])) {
-            throw new Five9Error(`This IVR script sends call data to outside systems. Hosts: ${c.hosts.join(', ') || 'none fixed'}${c.modules.length ? `; call-out modules: ${c.modules.join(', ')}` : ''}. Show the user these destinations and, only if they agree, call again with confirm_callout_hosts set to exactly [${c.hosts.map((h) => JSON.stringify(h)).join(', ')}]. Nothing was changed.`);
+            const shown = c.hosts.map((h) => (isIpHost(h) ? `${h} (RAW IP ADDRESS, not a domain name)` : h));
+            throw new Five9Error(`This IVR script sends call data to outside systems. Hosts: ${shown.join(', ') || 'none fixed'}${c.dynamic ? ', plus a URL built at run time' : ''}${c.modules.length ? `; call-out modules: ${c.modules.join(', ')}` : ''}. Show the user these destinations and, only if they agree, call again with confirm_callout_hosts set to exactly [${c.hosts.map((h) => JSON.stringify(h)).join(', ')}]. Nothing was changed.`);
           }
         }
       }
@@ -1287,6 +1288,8 @@ export async function callTool(cfg, name, args) {
   }
   // Never write the [redacted] placeholder from an earlier result back over a real secret.
   if (WRITE_TOOLS.has(name) && hasRedactionMarker(args || {})) throw new Five9Error(REDACTION_MARKER_PROBLEM);
+  // DOCTYPE or ENTITY declarations could make Five9's XML parser resolve external entities (XXE).
+  if (hasXmlDeclarations(args || {})) throw new Five9Error(XML_DECLARATION_PROBLEM);
   if (tool.rest) return tool.handler(new Five9RestClient(cfg), args || {}, cfg);
   const f9 = tool.five9 === false ? null : new Five9Client(cfg);
   return tool.handler(f9, args || {}, cfg);

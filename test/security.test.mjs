@@ -377,3 +377,37 @@ test('a write that carries [redacted] from an earlier result is refused before a
     assert.ok(!calls.some((c) => c.soap === 'modifyIVRScript'));
   });
 });
+
+// ---------- 10. XXE and outside destinations shown as they are ----------
+
+test('XML with DOCTYPE, ENTITY or conditional sections is refused before any request', async () => {
+  const xxe = [
+    '<!DOCTYPE ivrScript [<!ENTITY e SYSTEM "file:///etc/passwd">]><ivrScript><description>&e;</description></ivrScript>',
+    '<!doctype ivrScript><ivrScript/>',
+    '<ivrScript><!ENTITY x "y"></ivrScript>',
+    '<ivrScript><![ INCLUDE [<a/>]]></ivrScript>',
+  ];
+  for (const xml of xxe) {
+    for (const action of ['create', 'modify']) {
+      await withFive9({}, async (calls) => {
+        await assert.rejects(() => callTool(cfg, 'manage_ivr_script', { action, name: 'X', xml_definition: xml }), /DOCTYPE, ENTITY/);
+        assert.deepEqual(calls.map((c) => c.soap), []);
+      });
+    }
+  }
+});
+
+test('call-out hosts are listed as they are: IPv4, IPv6, integer IPs, decoy authorities, run time URLs', async () => {
+  const { ivrCallouts } = await import('../src/callouts.js');
+  const BSL = String.fromCharCode(92);
+  assert.deepEqual(ivrCallouts('<a>https://user:Pw1@203.0.113.50/c?token=abc</a>').hosts, ['203.0.113.50']);
+  assert.deepEqual(ivrCallouts('<a>https://[2001:db8::1]:8443/x</a>').hosts, ['[2001:db8::1]']);
+  assert.deepEqual(ivrCallouts('<a>https://3405803826/x</a>').hosts, ['203.0.113.50']);
+  assert.deepEqual(ivrCallouts(`<a>https://crm.customer.com${BSL}@evil.example.net/c</a>`).hosts, ['crm.customer.com', 'evil.example.net']);
+  assert.deepEqual(ivrCallouts('<a>%FF https%3A%2F%2Fpct.example.net%2Fp</a>').hosts, ['pct.example.net']);
+  assert.equal(ivrCallouts('<q><url>https://crm.customer.com/a</url></q><q><url>@Call.target@</url></q>').dynamic, true);
+  await withFive9({}, async () => {
+    await assert.rejects(() => callTool(cfg, 'manage_ivr_script', { action: 'create', name: 'X', xml_definition: '<q><url>https://user:Pw1@203.0.113.50/c?token=abc</url></q>' }),
+      (e) => /203\.0\.113\.50 \(RAW IP ADDRESS/.test(e.message) && !/Pw1|token=abc/.test(e.message));
+  });
+});
