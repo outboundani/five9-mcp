@@ -302,3 +302,11 @@ test('get_ivr_script scrubs secrets named by a sibling key or name element', asy
     assert.ok(text.includes('application/json') && text.includes('<key>Authorization</key>'));
   });
 });
+
+test('IVR flow node keys never resolve to prototype members', async () => {
+  const { validateFlow } = await import('../src/ivr.js');
+  for (const k of ['toString', 'constructor', '__proto__', 'hasOwnProperty']) {
+    assert.equal(validateFlow({ entry: k, nodes: { a: { type: 'hangup' } } }).ok, false, k);
+    assert.equal(validateFlow({ entry: 'a', nodes: { a: { type: 'play', prompt: { tts: 'x' }, next: k } } }).ok, false, k);
+  }
+});
