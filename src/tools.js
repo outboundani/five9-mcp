@@ -6,6 +6,7 @@ import { Five9RestClient, Five9RestError } from './five9rest.js';
 import { restCallRefusal, redactSecrets, redactResult } from './rest-rules.js';
 import { ABOUT } from './about.js';
 import { validateFlow, collectFlowRefs, composeIvrXml, flowToMermaid, scriptXmlToMermaid, IVR_NODE_TYPES } from './ivr.js';
+import { ivrCallouts } from './callouts.js';
 import { synthesizeUlawWav } from './tts.js';
 
 // Every mixed-action handler ends in an exact === chain and throws on anything
@@ -417,7 +418,11 @@ export const TOOLS = [
       additionalProperties: false,
     },
     // Scripts can embed web service credentials: scrubbed before they reach the model.
-    handler: async (f9, a) => redactResult(await f9.getIVRScript(a.name)),
+    handler: async (f9, a) => {
+      const script = await f9.getIVRScript(a.name);
+      const c = typeof script?.xmlDefinition === 'string' ? ivrCallouts(script.xmlDefinition) : { hosts: [], modules: [] };
+      return { ...redactResult(script), externalHosts: c.hosts, calloutModules: c.modules };
+    },
   },
   {
     name: 'manage_agent_group',
@@ -921,11 +926,21 @@ export const TOOLS = [
         name: { type: 'string', description: 'IVR script name' },
         xml_definition: { type: 'string', description: 'Full IVR script XML (create optional, modify required)' },
         description: { type: 'string' },
+        confirm_callout_hosts: { type: 'array', items: { type: 'string' }, description: 'Required when xml_definition calls out to any URL or host (web service, HTTP or query modules): the exact list of hosts it reaches, as reported by the refusal, after the user confirmed sending call data there. Use [] when only call-out modules without a fixed host were found.' },
       },
       required: ['action', 'name'],
       additionalProperties: false,
     },
     handler: (f9, a) => {
+      if (a.action === 'create' || a.action === 'modify') {
+        const c = a.xml_definition ? ivrCallouts(a.xml_definition) : { any: false, hosts: [], modules: [] };
+        if (c.any) {
+          const confirmed = Array.isArray(a.confirm_callout_hosts) ? a.confirm_callout_hosts.map((h) => String(h).toLowerCase()).sort() : null;
+          if (!confirmed || confirmed.length !== c.hosts.length || confirmed.some((h, i) => h !== c.hosts[i])) {
+            throw new Five9Error(`This IVR script sends call data to outside systems. Hosts: ${c.hosts.join(', ') || 'none fixed'}${c.modules.length ? `; call-out modules: ${c.modules.join(', ')}` : ''}. Show the user these destinations and, only if they agree, call again with confirm_callout_hosts set to exactly [${c.hosts.map((h) => JSON.stringify(h)).join(', ')}]. Nothing was changed.`);
+          }
+        }
+      }
       if (a.action === 'create') return f9.createIVRScript(a.name, a.xml_definition, a.description);
       if (a.action === 'modify') return f9.modifyIVRScript(a.name, a.xml_definition, a.description);
       if (a.action === 'delete') return f9.deleteIVRScript(a.name);
