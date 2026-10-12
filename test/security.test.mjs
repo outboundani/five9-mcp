@@ -177,3 +177,46 @@ test('action lookups ignore prototype members', () => {
   for (const a of ['constructor', '__proto__', 'toString', 'valueOf', undefined, 1]) assert.equal(ownAction({ add: 'x' }, a), undefined);
   assert.equal(ownAction({ add: 'x' }, 'add'), 'x');
 });
+
+// ---------- 4. REST retries: bounded, GET only ----------
+
+const restClient = async (extra = {}) => {
+  const { Five9RestClient } = await import('../src/five9rest.js');
+  const slept = [];
+  const client = new Five9RestClient({ restConsumerKey: 'k', restConsumerSecret: 's', restDomainId: 'd', sleep: async (ms) => { slept.push(ms); }, ...extra });
+  return { client, slept };
+};
+
+test('a long Retry-After is not waited out', async () => {
+  const { client, slept } = await restClient();
+  let hits = 0;
+  await withFive9({}, async () => {
+    await assert.rejects(() => client.request('GET', '/domains/v1/domains/{domainId}'), (e) => e.status === 429 && /60 seconds/.test(e.message));
+  }, { 'GET /domains/v1/domains/d': () => { hits++; return new Response('slow down', { status: 429, headers: { 'Retry-After': '60' } }); } });
+  assert.deepEqual(slept, []);
+  assert.equal(hits, 1);
+});
+
+test('GET retries are capped at two, with short waits', async () => {
+  const { MAX_RETRIES, MAX_RETRY_AFTER_MS } = await import('../src/five9rest.js');
+  const { client, slept } = await restClient();
+  let hits = 0;
+  await withFive9({}, async () => {
+    await assert.rejects(() => client.request('GET', '/x'), /rate limiting/);
+  }, { 'GET /x': () => { hits++; return new Response('busy', { status: 429 }); } });
+  assert.equal(hits, 1 + MAX_RETRIES);
+  assert.ok(MAX_RETRIES <= 2 && MAX_RETRY_AFTER_MS <= 10_000);
+  for (const ms of slept) assert.ok(ms <= MAX_RETRY_AFTER_MS);
+});
+
+test('writes are never retried, even on 5xx or 429', async () => {
+  for (const status of [500, 502, 503, 429]) {
+    const { client, slept } = await restClient();
+    let posts = 0;
+    await withFive9({}, async () => {
+      await assert.rejects(() => client.request('POST', '/circles/v1/domains/{domainId}/circles', { body: { name: 'x' } }));
+    }, { 'POST /circles/v1/domains/d/circles': () => { posts++; return new Response('oops', { status }); } });
+    assert.equal(posts, 1, `status ${status}`);
+    assert.deepEqual(slept, []);
+  }
+});

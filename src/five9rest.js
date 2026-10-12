@@ -28,8 +28,16 @@ export class Five9RestError extends Five9Error {}
 export { REGION_BASE_URLS };
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-// Backoff schedule for 429/5xx retries: 1s, 2s, 4s, 8s, 8s…
-const backoffMs = (attempt) => [1000, 2000, 4000, 8000][Math.min(attempt, 3)];
+// Backoff schedule for 429/5xx retries of GET requests: 1s, 2s.
+const backoffMs = (attempt) => [1000, 2000][Math.min(attempt, 1)];
+
+// Retries are bounded so a tool call never blocks for long: at most
+// MAX_RETRIES retries, only for idempotent GETs, and a Retry-After longer than
+// MAX_RETRY_AFTER_MS is not waited out (the caller is told when to try again).
+// Writes are never retried: a 5xx on a POST/PUT/PATCH/DELETE may already have
+// been applied, and retrying it could create or delete something twice.
+export const MAX_RETRIES = 2;
+export const MAX_RETRY_AFTER_MS = 10_000;
 
 export class Five9RestClient {
   // cfg: { restCredentials: { <name>: {key, secret} }, restConsumerKey,
@@ -45,7 +53,8 @@ export class Five9RestClient {
     this.region = (cfg?.restRegion || 'US').toUpperCase();
     this.baseUrl = (cfg?.restBaseUrl || REGION_BASE_URLS[this.region] || REGION_BASE_URLS.US).replace(/\/+$/, '');
     this.readOnly = Boolean(cfg?.readOnly);
-    this.maxRetries = 5;
+    this.maxRetries = MAX_RETRIES;
+    this.sleep = typeof cfg?.sleep === 'function' ? cfg.sleep : sleep; // injectable for tests
     this._tokens = {}; // credentialName -> { token, expiry }
   }
 
@@ -141,16 +150,20 @@ export class Five9RestClient {
     for (let attempt = 0; ; attempt++) {
       // No redirects: a 3xx must not carry the bearer token to another host.
       const res = await fetch(url, { method: m, headers: h, body: payload, redirect: 'manual' });
-      // 429: honor Retry-After (seconds) if present, else backoff.
-      if (res.status === 429 && attempt < this.maxRetries) {
+      const retryable = m === 'GET' && (res.status === 429 || (res.status >= 500 && res.status < 600));
+      if (retryable || res.status === 429) {
+        // 429: honor Retry-After (seconds) up to MAX_RETRY_AFTER_MS, else backoff.
         const ra = Number(res.headers.get('Retry-After'));
-        await sleep(Number.isFinite(ra) && ra > 0 ? ra * 1000 : backoffMs(attempt));
-        continue;
-      }
-      // 5xx: transient — retry with backoff.
-      if (res.status >= 500 && res.status < 600 && attempt < this.maxRetries) {
-        await sleep(backoffMs(attempt));
-        continue;
+        const waitMs = res.status === 429 && Number.isFinite(ra) && ra > 0 ? ra * 1000 : backoffMs(attempt);
+        if (retryable && attempt < this.maxRetries && waitMs <= MAX_RETRY_AFTER_MS) {
+          await this.sleep(waitMs);
+          continue;
+        }
+        if (res.status === 429) {
+          const err = new Five9RestError(`Five9 is rate limiting this API user (HTTP 429). Nothing more was sent. Try the same call again in about ${Math.max(1, Math.ceil(waitMs / 1000))} seconds.`);
+          err.status = 429;
+          throw err;
+        }
       }
       return this._parse(res, m, url);
     }
