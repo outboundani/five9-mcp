@@ -6,7 +6,7 @@ import { Five9RestClient, Five9RestError } from './five9rest.js';
 import { restCallRefusal, redactSecrets, redactResult } from './rest-rules.js';
 import { ABOUT } from './about.js';
 import { validateFlow, collectFlowRefs, composeIvrXml, flowToMermaid, scriptXmlToMermaid, IVR_NODE_TYPES } from './ivr.js';
-import { ivrCallouts, hasRedactionMarker, REDACTION_MARKER_PROBLEM, hasXmlDeclarations, XML_DECLARATION_PROBLEM, isIpHost } from './callouts.js';
+import { ivrCallouts, hasRedactionMarker, REDACTION_MARKER_PROBLEM, hasXmlDeclarations, XML_DECLARATION_PROBLEM, isIpHost, hasUndecodablePayload, ENCODED_PAYLOAD_PROBLEM } from './callouts.js';
 import { synthesizeUlawWav } from './tts.js';
 
 // Every mixed-action handler ends in an exact === chain and throws on anything
@@ -1286,6 +1286,9 @@ export async function callTool(cfg, name, args) {
   if (cfg?.readOnly && WRITE_TOOLS.has(name)) {
     throw new Five9Error(`${name} is disabled: this server is in read-only mode (FIVE9_READ_ONLY).`);
   }
+  // Encoded payloads (the IVR designer stores prompt text as gzip+base64) are decoded and
+  // checked like plain text below; one that cannot be decoded is never sent.
+  if (hasUndecodablePayload(args || {})) throw new Five9Error(ENCODED_PAYLOAD_PROBLEM);
   // Never write the [redacted] placeholder from an earlier result back over a real secret.
   if (WRITE_TOOLS.has(name) && hasRedactionMarker(args || {})) throw new Five9Error(REDACTION_MARKER_PROBLEM);
   // DOCTYPE or ENTITY declarations could make Five9's XML parser resolve external entities (XXE).
