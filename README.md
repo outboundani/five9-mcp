@@ -97,7 +97,7 @@ Defaults live in `wrangler.toml` and work for US domains:
 
 | Var | Default | Notes |
 |-----|---------|-------|
-| `FIVE9_API_HOST` | `api.five9.com` | EU: `api.eu.five9.com` · Canada: `api.ca.five9.com` |
+| `FIVE9_API_HOST` | `api.five9.com` | Canada: `api.five9.ca` · UK / EU London: `api.five9.eu` · EU Frankfurt: `api.eu.five9.com` (confirm with Five9 support if a non-US domain fails to connect) |
 | `FIVE9_ADMIN_VERSION` | `v13` | Config Web Services WSDL version |
 | `FIVE9_SUPERVISOR_VERSION` | `v13` | Statistics Web Services WSDL version |
 

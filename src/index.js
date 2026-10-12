@@ -86,7 +86,7 @@ async function handleSetup(request, env, cfg) {
 
   const username = String(body.username || '').trim();
   const password = String(body.password || '');
-  const host = ['api.five9.com', 'api.eu.five9.com', 'api.ca.five9.com'].includes(body.host) ? body.host : 'api.five9.com';
+  const host = ['api.five9.com', 'api.five9.ca', 'api.five9.eu', 'api.eu.five9.com'].includes(body.host) ? body.host : 'api.five9.com';
   if (!username || !password) return json({ error: 'Username and password are required.' }, 400);
 
   // Validate the credentials against Five9 before saving anything.

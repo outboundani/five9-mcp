@@ -390,8 +390,9 @@ npx wrangler secret put MCP_AUTH_TOKEN</code></pre>
       <div class="field"><label for="h">Region</label>
         <select id="h">
           <option value="api.five9.com">United States (api.five9.com)</option>
-          <option value="api.eu.five9.com">Europe (api.eu.five9.com)</option>
-          <option value="api.ca.five9.com">Canada (api.ca.five9.com)</option>
+          <option value="api.five9.ca">Canada (api.five9.ca)</option>
+          <option value="api.five9.eu">UK / EU London (api.five9.eu)</option>
+          <option value="api.eu.five9.com">EU Frankfurt (api.eu.five9.com)</option>
         </select></div>
       ${reconfigure ? `
       <div class="field"><label for="k">Current access key</label>

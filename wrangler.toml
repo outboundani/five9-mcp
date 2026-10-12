@@ -23,6 +23,6 @@ binding = "AI"
 
 # Optional vars (override in [vars] or the dashboard):
 [vars]
-FIVE9_API_HOST = "api.five9.com"        # EU: api.eu.five9.com  CA: api.ca.five9.com
+FIVE9_API_HOST = "api.five9.com"        # CA: api.five9.ca  UK/EU London: api.five9.eu  EU Frankfurt: api.eu.five9.com
 FIVE9_ADMIN_VERSION = "v13"             # Config Web Services WSDL version
 FIVE9_SUPERVISOR_VERSION = "v13"        # Statistics Web Services WSDL version
