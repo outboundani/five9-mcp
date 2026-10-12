@@ -272,3 +272,22 @@ test('a line break in a lead or contact value can never add CSV rows', async () 
     assert.equal(out.recordCount, 2);
   });
 });
+
+// ---------- 7. Recording egress and repeated elements ----------
+
+test('recording FTP settings cannot be changed through modify_campaign', async () => {
+  for (const k of ['useFtp', 'ftpHost', 'ftpUser', 'ftpPassword']) {
+    await withFive9({ getOutboundCampaign: outbound('Stopped Test') }, async (calls) => {
+      await assert.rejects(() => callTool(cfg, 'modify_campaign', { campaign_name: 'Stopped Test', changes: { [k]: k === 'useFtp' ? true : 'exfil.example.net' } }), /not allowed/, k);
+      assert.deepEqual(calls.map((c) => c.soap), [], `${k} sent something`);
+    });
+  }
+  assert.ok(!WRITABLE_FIELDS.campaign.some((k) => /ftp/i.test(k)));
+});
+
+test('a writable field given as a list is refused (no repeated elements)', async () => {
+  await withFive9({ getOutboundCampaign: outbound('Stopped Test') }, async (calls) => {
+    await assert.rejects(() => callTool(cfg, 'modify_campaign', { campaign_name: 'Stopped Test', changes: { description: ['a', 'b'] } }), /cannot be a list/);
+    assert.deepEqual(calls.map((c) => c.soap), []);
+  });
+});

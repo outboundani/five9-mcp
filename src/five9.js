@@ -194,8 +194,11 @@ function checkXmlName(name) {
 // never writable this way: the target object comes only from the top-level
 // tool argument (use the rename tools to rename).
 const without = (list, drop) => list.filter((k) => !drop.includes(k));
+export const RECORDING_EGRESS_FIELDS = ['useFtp', 'ftpHost', 'ftpUser', 'ftpPassword'];
 export const WRITABLE_FIELDS = {
-  campaign: without([...new Set([...OUTBOUND_CAMPAIGN_ORDER, ...INBOUND_CAMPAIGN_ORDER])], ['name', 'state', 'type']),
+  // Recording FTP settings are not writable here: pointing call recordings at an
+  // outside FTP server is data egress, so it stays a Five9 admin console task.
+  campaign: without([...new Set([...OUTBOUND_CAMPAIGN_ORDER, ...INBOUND_CAMPAIGN_ORDER])], ['name', 'state', 'type', ...RECORDING_EGRESS_FIELDS]),
   campaignProfile: without(ELEMENT_ORDERS.campaignProfile, ['name']),
   skill: without(ELEMENT_ORDERS.skill, ['name', 'id']),
   disposition: without(ELEMENT_ORDERS.disposition, ['name']),
@@ -222,7 +225,9 @@ export function writableProblem(kind, obj, label = kind) {
       if (!XML_NAME.test(k) || BLOCKED_KEYS.has(k) || !list.includes(k)) {
         return `${path} field ${JSON.stringify(k.slice(0, 80))} is not allowed. Allowed: ${list.join(', ')}.`;
       }
-      for (const x of Array.isArray(v) ? v : [v]) {
+      // None of the writable WSDL fields is a list: an array would write the element several times.
+      if (Array.isArray(v)) return `${path}.${k} cannot be a list.`;
+      for (const x of [v]) {
         if (x && typeof x === 'object') {
           const childList = Array.isArray(x) ? null : ELEMENT_ORDERS[k];
           if (!childList) return `${path}.${k} cannot be an object here.`;
