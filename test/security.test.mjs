@@ -79,3 +79,57 @@ test('legitimate changes still serialize in WSDL order', async () => {
   });
   for (const list of Object.values(WRITABLE_FIELDS)) for (const k of list) assert.match(k, /^[A-Za-z_][A-Za-z0-9_]*$/);
 });
+
+// ---------- 2. Retargeting a write through a name inside changes or fields ----------
+
+test('a name inside changes or fields can never redirect a write to another object', async () => {
+  const retarget = [
+    // Read Stopped Test, write Live Production with Stopped Test's settings.
+    ['modify_campaign', { campaign_name: 'Stopped Test', changes: { name: 'Live Production' } }],
+    ['modify_campaign', { campaign_name: 'Stopped Test', changes: { NAME: 'Live Production' } }],
+    ['modify_campaign', { campaign_name: 'Stopped Test', changes: { Name: 'Live Production', description: 'x' } }],
+    ['manage_campaign_profile', { action: 'modify', name: 'Unused', fields: { name: 'Used By Running' } }],
+    // Copy one disposition's type (for example DoNotDial) onto another.
+    ['manage_disposition', { action: 'modify', name: 'Scratch', fields: { name: 'Do Not Call' } }],
+    ['manage_contact_field', { action: 'modify', name: 'notes', changes: { name: 'number1' } }],
+    ['manage_skill', { action: 'modify', name: 'S1', fields: { name: 'Sales' } }],
+    ['modify_user', { user_name: 'u1', changes: { userName: 'admin1' } }],
+    ['modify_user', { user_name: 'u1', changes: { id: '7' } }],
+    ['manage_circle', { action: 'create', name: 'Approved Name', fields: { name: 'Other Name' } }],
+    ['manage_circle', { action: 'create', name: 'Approved Name', fields: { ID: 'x' } }],
+  ];
+  for (const [tool, args] of retarget) {
+    await withFive9({}, async (calls) => {
+      await assert.rejects(() => callTool(cfg, tool, args), /not allowed/, `${tool} ${JSON.stringify(args)}`);
+      assert.deepEqual(calls.filter((c) => c.soap || c.method !== 'POST' || !c.url.endsWith('/oauth2/v1/token')).map((c) => c.soap || c.url), [], `${tool} sent something`);
+    });
+  }
+  // Even if Five9 returns a different name, the identity written is the argument.
+  await withFive9({ getDisposition: env('getDisposition', '<return><name>Other</name><type>FinalDisp</type></return>') }, async (calls) => {
+    await callTool(cfg, 'manage_disposition', { action: 'modify', name: 'Scratch', fields: { description: 'x' } });
+    const sent = calls.find((c) => c.soap === 'modifyDisposition').body;
+    assert.match(sent, /<name>Scratch<\/name>/);
+    assert.ok(!sent.includes('Other'));
+  });
+  // Creates: the top-level name always wins over one slipped into fields.
+  await withFive9({}, async (calls) => {
+    await callTool(cfg, 'manage_disposition', { action: 'create', name: 'Approved', fields: { name: 'Other', type: 'FinalDisp' } });
+    await callTool(cfg, 'manage_skill', { action: 'create', name: 'Approved', fields: { name: 'Other' } });
+    await callTool(cfg, 'manage_campaign_profile', { action: 'create', name: 'Approved', fields: { name: 'Other' } });
+    for (const c of calls) {
+      assert.match(c.body, /<name>Approved<\/name>/, c.soap);
+      assert.ok(!c.body.includes('Other'), c.soap);
+    }
+  });
+  // A legitimate campaign change writes exactly one <name>, the checked one.
+  await withFive9({ getOutboundCampaign: outbound('Stopped Test') }, async (calls) => {
+    await callTool(cfg, 'modify_campaign', { campaign_name: 'Stopped Test', changes: { description: 'new' } });
+    const sent = calls.find((c) => c.soap === 'modifyOutboundCampaign').body;
+    assert.equal((sent.match(/<name>/g) || []).length, 1);
+    assert.match(sent, /<name>Stopped Test<\/name>/);
+  });
+  for (const [kind, list] of Object.entries(WRITABLE_FIELDS)) {
+    if (kind === 'criteria' || kind === 'orderBy') continue;
+    for (const id of ['name', 'userName', 'id']) assert.ok(!list.includes(id), `${kind} allows ${id}`);
+  }
+});

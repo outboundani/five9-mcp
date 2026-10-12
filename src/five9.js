@@ -660,6 +660,7 @@ export class Five9Client {
     if (campaignKind === 'autodial') throw new Five9Error('Editing autodial campaigns is not supported yet.');
     delete current.state; // state changes go through control_campaign
     const merged = mergeChanges(current, changes);
+    merged.name = name; // the target is only ever the campaign_name argument
     if (campaignKind === 'outbound') {
       await this.admin('modifyOutboundCampaign', xmlOf(merged, 'campaign', OUTBOUND_CAMPAIGN_ORDER));
     } else {
@@ -725,6 +726,7 @@ export class Five9Client {
     const current = all.find((p) => p.name === name);
     if (!current) throw new Five9Error(`Campaign profile "${name}" not found.`);
     const merged = mergeChanges(current, changes);
+    merged.name = name;
     await this.admin('modifyCampaignProfile', xmlOf(merged, 'campaignProfile'));
     return { ok: true, profile: name, applied: Object.keys(changes || {}) };
   }
@@ -756,6 +758,7 @@ export class Five9Client {
     const current = skills.find((s) => s.name === name);
     if (!current) throw new Five9Error(`Skill "${name}" not found.`);
     const merged = mergeChanges(current, changes);
+    merged.name = name;
     await this.admin('modifySkill', xmlOf(merged, 'skill'));
     return { ok: true, skill: name, applied: Object.keys(changes || {}) };
   }
@@ -811,6 +814,7 @@ export class Five9Client {
     if (!current) throw new Five9Error(`User "${userName}" not found.`);
     const merged = mergeChanges(current, changes);
     delete merged.fullName; // derived field — Five9 rejects it on modify
+    merged.userName = userName; // the target is only ever the user_name argument
     await this.admin('modifyUser', xmlOf(merged, 'userGeneralInfo'));
     return { ok: true, user: userName, applied: Object.keys(changes || {}) };
   }
@@ -843,6 +847,7 @@ export class Five9Client {
     // Five9 rejects round-tripped system fields here — send a sparse object:
     // the identifying name + type plus only the changed fields.
     const merged = mergeChanges({ name: current.name, type: current.type, typeParameters: current.typeParameters }, changes);
+    merged.name = name;
     await this.admin('modifyDisposition', xmlOf(merged, 'disposition'));
     return { ok: true, disposition: name, applied: Object.keys(changes || {}) };
   }
@@ -878,6 +883,7 @@ export class Five9Client {
     const current = all.find((f) => f.name === name);
     if (!current) throw new Five9Error(`Contact field "${name}" not found.`);
     const merged = mergeChanges(current, changes);
+    merged.name = name;
     await this.admin('modifyContactField', xmlOf(merged, 'field'));
     return { ok: true, field: name, applied: Object.keys(changes || {}) };
   }

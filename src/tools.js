@@ -194,7 +194,7 @@ export const TOOLS = [
       additionalProperties: false,
     },
     handler: (f9, a) => {
-      if (a.action === 'create') return f9.createCampaignProfile({ name: a.name, ...(a.fields || {}) });
+      if (a.action === 'create') return f9.createCampaignProfile({ ...(a.fields || {}), name: a.name });
       if (a.action === 'modify') return f9.modifyCampaignProfile(a.name, a.fields || {});
       return f9.deleteCampaignProfile(a.name);
     },
@@ -223,7 +223,7 @@ export const TOOLS = [
       additionalProperties: false,
     },
     handler: (f9, a) => {
-      if (a.action === 'create') return f9.createSkill({ name: a.name, ...(a.fields || {}) });
+      if (a.action === 'create') return f9.createSkill({ ...(a.fields || {}), name: a.name });
       if (a.action === 'modify') return f9.modifySkill(a.name, a.fields || {});
       return f9.deleteSkill(a.name);
     },
@@ -332,7 +332,7 @@ export const TOOLS = [
       additionalProperties: false,
     },
     handler: (f9, a) => {
-      if (a.action === 'create') return f9.createDisposition({ name: a.name, ...(a.fields || {}) });
+      if (a.action === 'create') return f9.createDisposition({ ...(a.fields || {}), name: a.name });
       if (a.action === 'modify') return f9.modifyDisposition(a.name, a.fields || {});
       if (a.action === 'rename') return f9.renameDisposition(a.name, a.new_name);
       return f9.deleteDisposition(a.name);
@@ -994,7 +994,12 @@ export const TOOLS = [
     handler: (r, a) => {
       if (a.action === 'list') return r.listCircles({ cursor: a.cursor, limit: a.limit });
       if (a.action === 'get') return r.getCircle(a.circle_id);
-      if (a.action === 'create') return r.createCircle({ name: a.name, ...(a.fields || {}) });
+      if (a.action === 'create') {
+        // The circle is named only by the top-level name; identifiers inside fields are refused.
+        const bad = Object.keys(a.fields || {}).find((k) => ['name', 'id'].includes(k.toLowerCase()));
+        if (bad) throw new Five9RestError(`fields.${bad} is not allowed: the circle name comes from name.`);
+        return r.createCircle({ ...(a.fields || {}), name: a.name });
+      }
       return r.deleteCircle(a.circle_id);
     },
   },
