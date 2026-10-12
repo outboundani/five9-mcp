@@ -220,3 +220,23 @@ test('writes are never retried, even on 5xx or 429', async () => {
     assert.deepEqual(slept, []);
   }
 });
+
+// ---------- 5. Secrets in IVR scripts and web connectors ----------
+
+test('get_ivr_script and list_web_connectors scrub embedded secrets', async () => {
+  const xml = '<ivrScript><webService><url>https://crm.example.com/api?api_key=SECRETKEY1&amp;id=1</url><user>svc</user><password>Hunter2!</password><authToken>tok-123</authToken></webService><auth password="Pw9" /></ivrScript>';
+  const escaped = xml.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  await withFive9({ getIVRScripts: env('getIVRScripts', `<return><name>Main</name><xmlDefinition>${escaped}</xmlDefinition></return>`) }, async () => {
+    const script = await callTool(cfg, 'get_ivr_script', { name: 'Main' });
+    const text = JSON.stringify(script);
+    for (const s of ['SECRETKEY1', 'Hunter2!', 'tok-123', 'Pw9']) assert.ok(!text.includes(s), `get_ivr_script leaks ${s}`);
+    assert.match(script.xmlDefinition, /<user>svc<\/user>/);
+  });
+  await withFive9({ getWebConnectors: env('getWebConnectors', '<return><name>CRM</name><url>https://u:pa55@crm.example.com/pop?token=abc123&amp;x=1</url><constants><key>apiKey</key><value>K-999</value></constants><constants><key>mode</key><value>full</value></constants></return>') }, async () => {
+    const conns = await callTool(cfg, 'list_web_connectors', {});
+    const text = JSON.stringify(conns);
+    for (const s of ['pa55', 'abc123', 'K-999']) assert.ok(!text.includes(s), `list_web_connectors leaks ${s}`);
+    assert.ok(text.includes('"full"'));
+    assert.ok(text.includes('x=1'));
+  });
+});

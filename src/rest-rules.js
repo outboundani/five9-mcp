@@ -148,3 +148,39 @@ export function redactSecrets(value) {
   }
   return out;
 }
+
+// ---------- SOAP result redaction (get_ivr_script, list_web_connectors) ----------
+
+// IVR scripts can embed web service credentials and web connectors can carry
+// CRM keys in URLs and constants. These results are scrubbed before they reach
+// the model: secret-looking keys (redactSecrets), { key|name, value } pairs
+// whose key looks secret, XML elements and attributes, URL query parameters
+// and URL userinfo.
+const SECRET_WORD = 'passw(?:or)?d|pwd|secret|token|api[_-]?key|apikey|access[_-]?key|auth(?:orization)?|credential|bearer|session[_-]?id|signature';
+const SECRET_NAME = new RegExp(`(${SECRET_WORD})`, 'i');
+const REDACTED = '[redacted]';
+const XML_SECRET_ELEMENT = new RegExp(`<((?:[A-Za-z_][\\w.-]*:)?[\\w.-]*(?:${SECRET_WORD})[\\w.-]*)(\\s[^>]*)?>([^<]*)</\\1>`, 'gi');
+const XML_SECRET_ATTR = new RegExp(`(\\b[\\w.-]*(?:${SECRET_WORD})[\\w.-]*\\s*=\\s*)("[^"]*"|'[^']*')`, 'gi');
+const URL_SECRET_PARAM = new RegExp(`([?&;][\\w.-]*(?:${SECRET_WORD}|key|sig)[\\w.-]*=)([^&#\\s"'<]+)`, 'gi');
+const URL_USERINFO = /(:\/\/)[^\s/:@"'<]+:[^\s/@"'<]+@/g;
+
+export function redactText(text) {
+  return String(text)
+    .replace(XML_SECRET_ELEMENT, (m, tag, attrs = '') => `<${tag}${attrs}>${REDACTED}</${tag}>`)
+    .replace(XML_SECRET_ATTR, (m, k, v) => `${k}${v[0]}${REDACTED}${v[0]}`)
+    .replace(URL_SECRET_PARAM, `$1${REDACTED}`)
+    .replace(URL_USERINFO, `$1${REDACTED}@`);
+}
+
+export function redactResult(value, depth = 0) {
+  if (depth > 32) return REDACTED;
+  if (typeof value === 'string') return redactText(value);
+  if (Array.isArray(value)) return value.map((v) => redactResult(v, depth + 1));
+  if (!value || typeof value !== 'object') return value;
+  const pairName = typeof value.key === 'string' ? value.key : typeof value.name === 'string' ? value.name : null;
+  const out = {};
+  for (const [k, v] of Object.entries(redactSecrets(value))) {
+    out[k] = k === 'value' && pairName && SECRET_NAME.test(pairName) && v !== null && v !== '' ? REDACTED : redactResult(v, depth + 1);
+  }
+  return out;
+}

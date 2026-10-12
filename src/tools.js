@@ -3,7 +3,7 @@
 
 import { Five9Client, Five9Error } from './five9.js';
 import { Five9RestClient, Five9RestError } from './five9rest.js';
-import { restCallRefusal, redactSecrets } from './rest-rules.js';
+import { restCallRefusal, redactSecrets, redactResult } from './rest-rules.js';
 import { ABOUT } from './about.js';
 import { validateFlow, collectFlowRefs, composeIvrXml, flowToMermaid, scriptXmlToMermaid, IVR_NODE_TYPES } from './ivr.js';
 import { synthesizeUlawWav } from './tts.js';
@@ -416,7 +416,8 @@ export const TOOLS = [
       required: ['name'],
       additionalProperties: false,
     },
-    handler: (f9, a) => f9.getIVRScript(a.name),
+    // Scripts can embed web service credentials: scrubbed before they reach the model.
+    handler: async (f9, a) => redactResult(await f9.getIVRScript(a.name)),
   },
   {
     name: 'manage_agent_group',
@@ -475,7 +476,8 @@ export const TOOLS = [
       properties: { pattern: { type: 'string', description: 'Java-style regex on connector name (default ".*")' } },
       additionalProperties: false,
     },
-    handler: (f9, a) => f9.getWebConnectors(a.pattern || '.*'),
+    // URLs and constants can carry CRM keys: scrubbed before they reach the model.
+    handler: async (f9, a) => redactResult(await f9.getWebConnectors(a.pattern || '.*')),
   },
   {
     name: 'manage_speed_dial',
