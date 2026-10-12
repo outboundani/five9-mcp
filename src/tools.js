@@ -8,6 +8,13 @@ import { ABOUT } from './about.js';
 import { validateFlow, collectFlowRefs, composeIvrXml, flowToMermaid, scriptXmlToMermaid, IVR_NODE_TYPES } from './ivr.js';
 import { synthesizeUlawWav } from './tts.js';
 
+// Every mixed-action handler ends in an exact === chain and throws on anything
+// it does not recognize (missing, "CREATE", "__proto__", ...). It never falls
+// through to a delete or a write.
+export function unknownAction(action, allowed) {
+  return new Five9Error(`Unknown action ${JSON.stringify(action ?? null)}. Use one of: ${allowed.join(', ')}. Nothing was changed.`);
+}
+
 export const TOOLS = [
   {
     name: 'about',
@@ -196,7 +203,8 @@ export const TOOLS = [
     handler: (f9, a) => {
       if (a.action === 'create') return f9.createCampaignProfile({ ...(a.fields || {}), name: a.name });
       if (a.action === 'modify') return f9.modifyCampaignProfile(a.name, a.fields || {});
-      return f9.deleteCampaignProfile(a.name);
+      if (a.action === 'delete') return f9.deleteCampaignProfile(a.name);
+      throw unknownAction(a.action, ['create', 'modify', 'delete']);
     },
   },
   {
@@ -225,7 +233,8 @@ export const TOOLS = [
     handler: (f9, a) => {
       if (a.action === 'create') return f9.createSkill({ ...(a.fields || {}), name: a.name });
       if (a.action === 'modify') return f9.modifySkill(a.name, a.fields || {});
-      return f9.deleteSkill(a.name);
+      if (a.action === 'delete') return f9.deleteSkill(a.name);
+      throw unknownAction(a.action, ['create', 'modify', 'delete']);
     },
   },
   {
@@ -335,7 +344,8 @@ export const TOOLS = [
       if (a.action === 'create') return f9.createDisposition({ ...(a.fields || {}), name: a.name });
       if (a.action === 'modify') return f9.modifyDisposition(a.name, a.fields || {});
       if (a.action === 'rename') return f9.renameDisposition(a.name, a.new_name);
-      return f9.deleteDisposition(a.name);
+      if (a.action === 'delete') return f9.deleteDisposition(a.name);
+      throw unknownAction(a.action, ['create', 'modify', 'rename', 'delete']);
     },
   },
   {
@@ -356,7 +366,8 @@ export const TOOLS = [
     handler: (f9, a) => {
       if (a.action === 'create') return f9.createContactField({ name: a.name, type: a.type, displayAs: a.display_as });
       if (a.action === 'modify') return f9.modifyContactField(a.name, a.changes || { ...(a.display_as ? { displayAs: a.display_as } : {}), ...(a.type ? { type: a.type } : {}) });
-      return f9.deleteContactField(a.name);
+      if (a.action === 'delete') return f9.deleteContactField(a.name);
+      throw unknownAction(a.action, ['create', 'modify', 'delete']);
     },
   },
   {
@@ -894,7 +905,8 @@ export const TOOLS = [
     handler: (f9, a) => {
       if (a.action === 'get') return f9.getCampaignProfileFilter(a.profile_name);
       if (a.action === 'set_criteria') return f9.modifyCampaignProfileCrmCriteria(a.profile_name, { grouping: a.grouping, addCriteria: a.add_criteria, removeCriteria: a.remove_criteria });
-      return f9.modifyCampaignProfileFilterOrder(a.profile_name, { addOrderByField: a.add_order_by, removeOrderByField: a.remove_order_by });
+      if (a.action === 'set_order') return f9.modifyCampaignProfileFilterOrder(a.profile_name, { addOrderByField: a.add_order_by, removeOrderByField: a.remove_order_by });
+      throw unknownAction(a.action, ['get', 'set_criteria', 'set_order']);
     },
   },
   {
@@ -914,7 +926,8 @@ export const TOOLS = [
     handler: (f9, a) => {
       if (a.action === 'create') return f9.createIVRScript(a.name, a.xml_definition, a.description);
       if (a.action === 'modify') return f9.modifyIVRScript(a.name, a.xml_definition, a.description);
-      return f9.deleteIVRScript(a.name);
+      if (a.action === 'delete') return f9.deleteIVRScript(a.name);
+      throw unknownAction(a.action, ['create', 'modify', 'delete']);
     },
   },
   {
@@ -1000,7 +1013,8 @@ export const TOOLS = [
         if (bad) throw new Five9RestError(`fields.${bad} is not allowed: the circle name comes from name.`);
         return r.createCircle({ ...(a.fields || {}), name: a.name });
       }
-      return r.deleteCircle(a.circle_id);
+      if (a.action === 'delete') return r.deleteCircle(a.circle_id);
+      throw unknownAction(a.action, ['list', 'get', 'create', 'delete']);
     },
   },
   {

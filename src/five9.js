@@ -79,6 +79,13 @@ export function toArray(v) {
 
 export class Five9Error extends Error {}
 
+// action -> SOAP method lookups use OWN properties and exact strings only, so
+// "constructor", "__proto__" or "toString" can never resolve to a prototype
+// member. Returns undefined for anything unrecognized.
+export function ownAction(map, action) {
+  return typeof action === 'string' && Object.hasOwn(map, action) ? map[action] : undefined;
+}
+
 // SOAP operations allowed in read-only mode. setSessionParameters only scopes
 // the supervisor stats session; it changes no configuration.
 const READ_ONLY_METHOD = /^(get\w*|is\w*|checkDncForNumbers|runReport|setSessionParameters)$/;
@@ -319,7 +326,7 @@ export class Five9Client {
 
   async controlCampaign(action, campaignName) {
     const methods = { start: 'startCampaign', stop: 'stopCampaign', force_stop: 'forceStopCampaign', reset: 'resetCampaign', reset_list_positions: 'resetListPosition' };
-    const method = methods[action];
+    const method = ownAction(methods, action);
     if (!method) throw new Five9Error(`Unknown campaign action "${action}" — use start, stop, force_stop, reset, or reset_list_positions.`);
     await this.admin(method, `<campaignName>${escapeXml(campaignName)}</campaignName>`);
     return { ok: true, action, campaign: campaignName };
@@ -682,7 +689,7 @@ export class Five9Client {
   // ---- Campaign associations ----
 
   async manageCampaignSkills(action, campaignName, skills) {
-    const method = { add: 'addSkillsToCampaign', remove: 'removeSkillsFromCampaign' }[action];
+    const method = ownAction({ add: 'addSkillsToCampaign', remove: 'removeSkillsFromCampaign' }, action);
     if (!method) throw new Five9Error(`Unknown action "${action}" — use add or remove.`);
     const inner = `<campaignName>${escapeXml(campaignName)}</campaignName>` + toArray(skills).map((s) => `<skills>${escapeXml(s)}</skills>`).join('');
     await this.admin(method, inner);
@@ -690,7 +697,7 @@ export class Five9Client {
   }
 
   async manageCampaignDnis(action, campaignName, dnis) {
-    const method = { add: 'addDNISToCampaign', remove: 'removeDNISFromCampaign' }[action];
+    const method = ownAction({ add: 'addDNISToCampaign', remove: 'removeDNISFromCampaign' }, action);
     if (!method) throw new Five9Error(`Unknown action "${action}" — use add or remove.`);
     const inner = `<campaignName>${escapeXml(campaignName)}</campaignName>` + toArray(dnis).map((d) => `<DNISList>${escapeXml(d)}</DNISList>`).join('');
     await this.admin(method, inner);
@@ -698,7 +705,7 @@ export class Five9Client {
   }
 
   async manageCampaignDispositions(action, campaignName, dispositions) {
-    const method = { add: 'addDispositionsToCampaign', remove: 'removeDispositionsFromCampaign' }[action];
+    const method = ownAction({ add: 'addDispositionsToCampaign', remove: 'removeDispositionsFromCampaign' }, action);
     if (!method) throw new Five9Error(`Unknown action "${action}" — use add or remove.`);
     const inner = `<campaignName>${escapeXml(campaignName)}</campaignName>` + toArray(dispositions).map((d) => `<dispositions>${escapeXml(d)}</dispositions>`).join('');
     await this.admin(method, inner);
@@ -769,7 +776,7 @@ export class Five9Client {
   }
 
   async manageUserSkill(action, userName, skillName, level = 1) {
-    const method = { add: 'userSkillAdd', set_level: 'userSkillModify', remove: 'userSkillRemove' }[action];
+    const method = ownAction({ add: 'userSkillAdd', set_level: 'userSkillModify', remove: 'userSkillRemove' }, action);
     if (!method) throw new Five9Error(`Unknown action "${action}" — use add, set_level, or remove.`);
     const userSkill = { level: Number(level) || 1, skillName, userName };
     await this.admin(method, xmlOf(userSkill, 'userSkill'));
@@ -918,7 +925,7 @@ export class Five9Client {
       return { ok: true, deleted: fields.name };
     }
     if (!fields?.name || !fields?.text) throw new Five9Error('name and text are required.');
-    const method = { create: 'addPromptTTS', modify: 'modifyPromptTTS' }[action];
+    const method = ownAction({ create: 'addPromptTTS', modify: 'modifyPromptTTS' }, action);
     if (!method) throw new Five9Error(`Unknown action "${action}" — use create, modify, or delete.`);
     const prompt = { description: fields.description, languages: fields.language || 'en-US', name: fields.name, type: 'TTSGenerated' };
     const ttsInfo = { language: fields.language || 'en-US', text: fields.text, voice: fields.voice };
@@ -1173,7 +1180,7 @@ export class Five9Client {
       return { ok: true, deleted: name };
     }
     if (!name || !wavBase64) throw new Five9Error('name and wav_base64 are required.');
-    const method = { create: 'addPromptWavInline', modify: 'modifyPromptWavInline' }[action];
+    const method = ownAction({ create: 'addPromptWavInline', modify: 'modifyPromptWavInline' }, action);
     if (!method) throw new Five9Error(`Unknown action "${action}" — use create, modify, or delete.`);
     const prompt = { description, languages: language || 'en-US', name, type: 'PreRecorded' };
     await this.admin(method, xmlOf(prompt, 'prompt') + `<wavFile>${escapeXml(wavBase64)}</wavFile>`);

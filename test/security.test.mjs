@@ -5,7 +5,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { callTool } from '../src/tools.js';
-import { xmlOf, mergeChanges, WRITABLE_FIELDS } from '../src/five9.js';
+import { xmlOf, mergeChanges, WRITABLE_FIELDS, ownAction } from '../src/five9.js';
 
 const cfg = { username: 'u', password: 'p', host: 'api.five9.com', restConsumerKey: 'k', restConsumerSecret: 's', restDomainId: 'd' };
 
@@ -132,4 +132,48 @@ test('a name inside changes or fields can never redirect a write to another obje
     if (kind === 'criteria' || kind === 'orderBy') continue;
     for (const id of ['name', 'userName', 'id']) assert.ok(!list.includes(id), `${kind} allows ${id}`);
   }
+});
+
+// ---------- 3. Unknown actions must never fall through to a delete ----------
+
+const MIXED = {
+  manage_campaign_profile: { name: 'P1' },
+  manage_skill: { name: 'S1' },
+  manage_disposition: { name: 'D1' },
+  manage_contact_field: { name: 'F1' },
+  manage_ivr_script: { name: 'IVR1' },
+  manage_circle: { circle_id: 'c1' },
+  manage_campaign_profile_filter: { profile_name: 'P1' },
+  manage_tts_prompt: { name: 'T1', text: 'hi' },
+  manage_wav_prompt: { name: 'W1', wav_base64: 'AAAA' },
+  manage_agent_group: { name: 'G1', agents: ['a'] },
+  manage_call_variable: { name: 'V1', group: 'Call' },
+  manage_speed_dial: { code: '11', number: '5551234567' },
+  manage_reason_code: { name: 'R1', type: 'NotReady' },
+  manage_web_connector: { name: 'C1', url: 'https://x.example' },
+  manage_dnc: { numbers: ['5551234567'] },
+  manage_campaign_skills: { campaign_name: 'C', skills: ['S'] },
+  manage_campaign_dnis: { campaign_name: 'C', dnis: ['5551234567'] },
+  manage_campaign_dispositions: { campaign_name: 'C', dispositions: ['D'] },
+  manage_campaign_lists: { campaign_name: 'C', list_name: 'L' },
+  manage_user_skills: { user_name: 'u', skill_name: 'S' },
+  control_campaign: { campaign_name: 'C' },
+};
+const JUNK = [undefined, null, '', 'CREATE', 'Create', ' create', 'create ', 'DELETE', 'remove ', '__proto__', 'constructor', 'toString', 'hasOwnProperty', ['delete'], {}, 1];
+
+test('unrecognized actions throw and send nothing that changes Five9', async () => {
+  for (const [tool, base] of Object.entries(MIXED)) {
+    for (const action of JUNK) {
+      await withFive9({}, async (calls) => {
+        await assert.rejects(() => callTool(cfg, tool, { ...base, action }), (e) => /Unknown|use /i.test(e.message), `${tool} ${JSON.stringify(action)}`);
+        const writes = calls.filter((c) => c.soap || (c.method && c.method !== 'GET' && !c.url.endsWith('/oauth2/v1/token')));
+        assert.deepEqual(writes.map((c) => c.soap || `${c.method} ${c.url}`), [], `${tool} ${JSON.stringify(action)} sent something`);
+      });
+    }
+  }
+});
+
+test('action lookups ignore prototype members', () => {
+  for (const a of ['constructor', '__proto__', 'toString', 'valueOf', undefined, 1]) assert.equal(ownAction({ add: 'x' }, a), undefined);
+  assert.equal(ownAction({ add: 'x' }, 'add'), 'x');
 });
