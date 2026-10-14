@@ -334,7 +334,11 @@ export class Five9Client {
       });
       text = await res.text();
       const delay = Five9Client.dnsRetryDelaysMs[attempt];
-      if (!(res.status === 530 && /error code:\s*1016/.test(text)) || delay === undefined) break;
+      const dnsError = res.status === 530 && /error code:\s*1016/.test(text);
+      // The cf-ray suffix names the Cloudflare location (e.g. -CLT), which is what
+      // Cloudflare support asks for when chasing a 1016.
+      if (dnsError) console.warn(`five9 ${method}: 1016 origin DNS error on attempt ${attempt + 1}, cf-ray ${res.headers.get('cf-ray') || 'n/a'}`);
+      if (!dnsError || delay === undefined) break;
       await new Promise((r) => setTimeout(r, delay));
     }
 
