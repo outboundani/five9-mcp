@@ -321,12 +321,22 @@ export class Five9Client {
       `<soapenv:Envelope xmlns:soapenv="http://schemas.xmlsoap.org/soap/envelope/" xmlns:ser="${NS[service]}">` +
       `<soapenv:Header/><soapenv:Body><ser:${method}>${innerXml}</ser:${method}></soapenv:Body></soapenv:Envelope>`;
 
-    const res = await fetch(url, {
-      method: 'POST',
-      headers: { 'Content-Type': 'text/xml; charset=utf-8', SOAPAction: '', Authorization: this.auth },
-      body: envelope,
-    });
-    const text = await res.text();
+    // Cloudflare answers 530 "error code: 1016" when it cannot resolve the
+    // origin's DNS, so the request never reached Five9 and retrying is safe
+    // even for writes. Seen intermittently per Cloudflare location (api.five9.com
+    // is delegated from Cloudflare DNS to another provider).
+    let res, text;
+    for (let attempt = 0; ; attempt++) {
+      res = await fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'text/xml; charset=utf-8', SOAPAction: '', Authorization: this.auth },
+        body: envelope,
+      });
+      text = await res.text();
+      const delay = Five9Client.dnsRetryDelaysMs[attempt];
+      if (!(res.status === 530 && /error code:\s*1016/.test(text)) || delay === undefined) break;
+      await new Promise((r) => setTimeout(r, delay));
+    }
 
     let parsed;
     try { parsed = parseXml(text); } catch { parsed = null; }
@@ -345,6 +355,9 @@ export class Five9Client {
     const response = body[`${method}Response`];
     return response === undefined ? body : response;
   }
+
+  // Waits between retries of a Cloudflare 1016 (origin DNS) failure; tests shorten these.
+  static dnsRetryDelaysMs = [300, 900];
 
   admin(method, innerXml) { return this.soap('admin', method, innerXml); }
   supervisor(method, innerXml) { return this.soap('supervisor', method, innerXml); }
